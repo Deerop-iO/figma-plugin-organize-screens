@@ -78,6 +78,27 @@ vercel --prod
    with your real deployment in both places, in the same change).
 3. `devAllowedDomains` is stripped automatically at publish; no cleanup needed.
 
+## Troubleshooting: "Failed to fetch" in Figma
+
+If Analyze Design shows **Failed to fetch** (or a generic network error), open
+your production API in a browser:
+
+`https://<your-project>.vercel.app/api/bonzai/analyze-design`
+
+- **Login / "Authentication Required" page** — the deployment has **Vercel
+  Deployment Protection** enabled. The plugin cannot complete Vercel SSO, so the
+  CORS preflight fails and Figma reports "Failed to fetch".
+
+  **Fix:** Vercel dashboard → your project → **Settings** → **Deployment
+  Protection** → turn off **Vercel Authentication** for **Production** (or use
+  protection on Preview only). Redeploy, then retry Analyze Design.
+
+- **JSON error** (`Missing imageBase64`, `Server is missing BONZAI_API_KEY`, …)
+  — the route is reachable; fix env vars or the plugin request payload.
+
+- **404** — wrong Vercel root directory or route not deployed. Root directory
+  must be `src/cursor_mcp_plugin/vercel-backend`.
+
 ## Production hardening
 
 This route calls a paid API. For anything beyond local experimentation:

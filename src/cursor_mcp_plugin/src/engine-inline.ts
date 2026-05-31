@@ -5320,6 +5320,69 @@ function osResolveAnalyzeDesignTarget() {
   };
 }
 
+// Section-scope analyze target: every standard Design Review screen in one
+// selected board. Used when the selection is the section / container / header
+// or multiple cards (card scope takes priority for a single card). The runtime
+// re-resolves each frame by id at run time; the probe only needs the count.
+function osResolveAnalyzeDesignSectionTarget() {
+  if (figma.editorType && figma.editorType !== "figma") {
+    return { eligible: false, reason: "Analyze Design runs in the Figma editor only." };
+  }
+  const sel = (figma.currentPage && figma.currentPage.selection) || [];
+  if (!sel.length) {
+    return { eligible: false, reason: "Select a Design Review section to analyze its screens." };
+  }
+  const boards = osResolveSelectedBoards(sel);
+  if (boards.length !== 1) {
+    return {
+      eligible: false,
+      reason: "Select a single Design Review section.",
+    };
+  }
+  const root = boards[0];
+  const container = root.container || osFindContainerInSection(root.section);
+  if (!osBoardHasDesignReviewSurface(container)) {
+    return {
+      eligible: false,
+      reason: "Section analysis needs a Design Review board. Switch the board to Design Review first.",
+    };
+  }
+
+  const grid = osFindGrid(container);
+  const cards = osCollectCardsInGrid(grid || container);
+  const screens = [];
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    const frame = osCardEmbeddedFrame(card);
+    if (!frame) continue;
+    if (!osCardReviewCard(card)) continue;
+    if (osCardReviewFrameworkId(card) === "comparative") continue;
+    screens.push({
+      cardId: card.id,
+      frameId: frame.id,
+      cardName: osCardDisplayName(card),
+      frameName: frame.name || "",
+      frameworkId: "standard",
+    });
+  }
+
+  if (!screens.length) {
+    return {
+      eligible: false,
+      reason: "No standard Design Review screens found in this section.",
+    };
+  }
+
+  return {
+    eligible: true,
+    sectionId: root.section.id,
+    sectionName: root.section.name || "",
+    boardType: "design-review",
+    screens: screens,
+    screenCount: screens.length,
+  };
+}
+
 // Set a text node's characters after loading its font (handles mixed fonts by
 // falling back to the base family). Optionally repaint the fill.
 async function osSetTextNodeCharacters(node, text, color) {
@@ -5373,18 +5436,36 @@ function osIndexReviewFieldNodes(reviewCard) {
   return map;
 }
 
-// Apply a validated DesignReviewAnalysisV1 to the card's fields. Re-resolves
-// nodes by id (never trusts references across the network await). Existing real
-// text is preserved unless `overwrite` is true. Returns readable applied /
-// skipped field labels.
-async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, overwrite) {
-  if (figma.editorType && figma.editorType !== "figma") {
-    throw new Error("Analyze Design is only available in Figma design files.");
+// Find the "Review Field Text" TEXT node for a given field key by structure
+// (frame named "Review Section / <key>"), independent of plugin-data tags.
+// Fallback for boards whose review fields were built before tagging, or where
+// the tag was stripped by an edit/copy. Returns null when no such section.
+function osFindReviewFieldNodeByName(reviewCard, fieldKey) {
+  if (!reviewCard || !("children" in reviewCard)) return null;
+  const sectionName = "Review Section / " + fieldKey;
+  const stack = [reviewCard];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.type === "FRAME" && node.name === sectionName) {
+      return osFindDescendantTextByName(node, "Review Field Text");
+    }
+    if ("children" in node) {
+      for (let i = 0; i < node.children.length; i++) stack.push(node.children[i]);
+    }
   }
-  if (!analysis || typeof analysis !== "object") {
-    throw new Error("No analysis result to apply.");
-  }
+  return null;
+}
 
+// Resolve a review field's editable TEXT node: prefer the tag index, then fall
+// back to the structural ("Review Section / <key>") lookup.
+function osResolveReviewFieldNode(reviewCard, fieldNodes, fieldKey) {
+  if (fieldNodes && fieldNodes[fieldKey]) return fieldNodes[fieldKey];
+  return osFindReviewFieldNodeByName(reviewCard, fieldKey);
+}
+
+// Re-resolve a Screen Card by id and assert it is still a valid card frame.
+// Shared by the analyze-apply and reset paths (both run after an async gap).
+async function osResolveScreenCardById(cardId) {
   const card = await figma.getNodeByIdAsync(cardId);
   if (
     !card ||
@@ -5394,6 +5475,170 @@ async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, overwrit
     card.name.indexOf("Screen Card / ") !== 0
   ) {
     throw new Error("The screen card is no longer on the canvas.");
+  }
+  return card;
+}
+
+// Apply a validated DesignReviewAnalysisV1 to the card's fields. Re-resolves
+// nodes by id (never trusts references across the network await). Always
+// replaces existing text when the model returned content for that field.
+// `scope` narrows the write: "describe" only the Card Description, "review"
+// only the review section; any other value writes both (back-compat default).
+// Returns readable applied / skipped field labels (skipped = missing node or
+// write failure only).
+async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, scope) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    throw new Error("Analyze Design is only available in Figma design files.");
+  }
+  if (!analysis || typeof analysis !== "object") {
+    throw new Error("No analysis result to apply.");
+  }
+
+  const card = await osResolveScreenCardById(cardId);
+
+  const tokens = osResolveTokens(
+    OS_BASE_TOKENS,
+    osResolveBoardType("design-review"),
+    osResolveOrientation("passthrough")
+  );
+
+  const applied = [];
+  const skipped = [];
+  const doDescribe = scope !== "review";
+  const doReview = scope !== "describe";
+
+  // 1. Card Description (Screen Column, name-based).
+  if (doDescribe) {
+    const descText = typeof analysis.cardDescription === "string"
+      ? analysis.cardDescription.trim()
+      : "";
+    if (descText) {
+      const descNode = osFindDescendantTextByName(card, "Card Description");
+      if (descNode) {
+        const ok = await osSetTextNodeCharacters(descNode, descText, tokens.mutedTextColor);
+        if (ok) applied.push(OS_ANALYZE_FIELD_LABELS.cardDescription);
+        else skipped.push(OS_ANALYZE_FIELD_LABELS.cardDescription);
+      }
+    }
+  }
+
+  if (doReview) {
+    // 2. Review fields (tagged TEXT nodes inside the Review Card).
+    const reviewCard = osCardReviewCard(card);
+    const fieldNodes = osIndexReviewFieldNodes(reviewCard);
+
+    for (let i = 0; i < OS_ANALYZE_LIST_FIELDS.length; i++) {
+      const key = OS_ANALYZE_LIST_FIELDS[i];
+      const list = Array.isArray(analysis[key]) ? analysis[key] : [];
+      const text = osJoinAnalysisBullets(list);
+      if (!text) continue;
+      const node = osResolveReviewFieldNode(reviewCard, fieldNodes, key);
+      if (!node) {
+        skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+        continue;
+      }
+      const ok = await osSetTextNodeCharacters(node, text, tokens.textColor);
+      if (ok) applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+      else skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+    }
+
+    // 3. Notes (optional single block).
+    const notesText = typeof analysis.notes === "string" ? analysis.notes.trim() : "";
+    if (notesText) {
+      const notesNode = osResolveReviewFieldNode(reviewCard, fieldNodes, "notes");
+      if (notesNode) {
+        const ok = await osSetTextNodeCharacters(notesNode, notesText, tokens.textColor);
+        if (ok) applied.push(OS_ANALYZE_FIELD_LABELS.notes);
+        else skipped.push(OS_ANALYZE_FIELD_LABELS.notes);
+      }
+    }
+  }
+
+  return {
+    operation: scope === "describe" ? "describe" : "review",
+    sectionId: sectionId,
+    cardId: cardId,
+    cardName: osCardDisplayName(card),
+    applied: applied,
+    skipped: skipped,
+    engineVersion: OS_ENGINE_VERSION,
+  };
+}
+
+// Reset every review section field (What's good / Questions / Concerns / Ideas
+// / Notes) back to its framework placeholder, in the muted placeholder color.
+// Offline (no network). Writing the byte-exact placeholder is required so
+// `osReviewFieldIsRealText` re-classifies the field as empty and a later
+// recompose (which reads live text) keeps it empty. The Card Description is
+// intentionally left untouched.
+async function osResetDesignReviewFields(sectionId, cardId) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    throw new Error("Reset review is only available in Figma design files.");
+  }
+
+  const card = await osResolveScreenCardById(cardId);
+
+  const tokens = osResolveTokens(
+    OS_BASE_TOKENS,
+    osResolveBoardType("design-review"),
+    osResolveOrientation("passthrough")
+  );
+
+  const reviewCard = osCardReviewCard(card);
+  const fieldNodes = osIndexReviewFieldNodes(reviewCard);
+
+  const applied = [];
+  const skipped = [];
+  const keys = OS_ANALYZE_LIST_FIELDS.concat(["notes"]);
+
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const node = osResolveReviewFieldNode(reviewCard, fieldNodes, key);
+    if (!node) continue;
+    const placeholder = OS_REVIEW_PLACEHOLDERS[key];
+    if (typeof placeholder !== "string") continue;
+    const ok = await osSetTextNodeCharacters(
+      node,
+      placeholder,
+      tokens.reviewPlaceholderColor
+    );
+    if (ok) applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+    else skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+  }
+
+  return {
+    operation: "resetReview",
+    sectionId: sectionId,
+    cardId: cardId,
+    cardName: osCardDisplayName(card),
+    applied: applied,
+    skipped: skipped,
+    engineVersion: OS_ENGINE_VERSION,
+  };
+}
+
+// Write the section's Overview Header "Section Title" / "Section Description"
+// TEXT nodes (used by the section-scope Describe action). Re-resolves the
+// section by id, writes live nodes in the same colors the header build uses
+// (title -> textColor, description -> mutedTextColor). Recompose reuses these
+// live values (engine.js osRecompose section-copy resolution), so no baseline
+// write is needed. Only writes fields the caller actually provides.
+async function osApplySectionMeta(sectionId, meta) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    throw new Error("Section summary is only available in Figma design files.");
+  }
+  if (!meta || typeof meta !== "object") {
+    throw new Error("No section summary to apply.");
+  }
+
+  const section = await figma.getNodeByIdAsync(sectionId);
+  if (!section || section.removed || section.type !== "SECTION") {
+    throw new Error("The section is no longer on the canvas.");
+  }
+  const container = osFindContainerInSection(section);
+  const header = container ? osFindHeader(container) : null;
+  if (!header) {
+    throw new Error("This section has no Overview Header to update.");
   }
 
   const tokens = osResolveTokens(
@@ -5405,65 +5650,35 @@ async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, overwrit
   const applied = [];
   const skipped = [];
 
-  // 1. Card Description (Screen Column, name-based).
-  const descText = typeof analysis.cardDescription === "string"
-    ? analysis.cardDescription.trim()
-    : "";
-  if (descText) {
-    const descNode = osFindDescendantTextByName(card, "Card Description");
+  const title = typeof meta.sectionTitle === "string" ? meta.sectionTitle.trim() : "";
+  if (title) {
+    const titleNode = osFindNamedTextChild(header, "Section Title");
+    if (titleNode) {
+      const ok = await osSetTextNodeCharacters(titleNode, title, tokens.textColor);
+      if (ok) applied.push("Section title");
+      else skipped.push("Section title");
+    } else {
+      skipped.push("Section title");
+    }
+  }
+
+  const desc =
+    typeof meta.sectionDescription === "string" ? meta.sectionDescription.trim() : "";
+  if (desc) {
+    const descNode = osFindNamedTextChild(header, "Section Description");
     if (descNode) {
-      const existing =
-        typeof descNode.characters === "string" ? descNode.characters.trim() : "";
-      if (existing && overwrite !== true) {
-        skipped.push(OS_ANALYZE_FIELD_LABELS.cardDescription);
-      } else {
-        const ok = await osSetTextNodeCharacters(descNode, descText, tokens.mutedTextColor);
-        if (ok) applied.push(OS_ANALYZE_FIELD_LABELS.cardDescription);
-      }
-    }
-  }
-
-  // 2. Review fields (tagged TEXT nodes inside the Review Card).
-  const reviewCard = osCardReviewCard(card);
-  const fieldNodes = osIndexReviewFieldNodes(reviewCard);
-
-  for (let i = 0; i < OS_ANALYZE_LIST_FIELDS.length; i++) {
-    const key = OS_ANALYZE_LIST_FIELDS[i];
-    const list = Array.isArray(analysis[key]) ? analysis[key] : [];
-    const text = osJoinAnalysisBullets(list);
-    if (!text) continue;
-    const node = fieldNodes[key];
-    if (!node) continue;
-    const existing = typeof node.characters === "string" ? node.characters : "";
-    if (osReviewFieldIsRealText(existing, key) && overwrite !== true) {
-      skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
-      continue;
-    }
-    const ok = await osSetTextNodeCharacters(node, text, tokens.textColor);
-    if (ok) applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
-  }
-
-  // 3. Notes (optional single block).
-  const notesText = typeof analysis.notes === "string" ? analysis.notes.trim() : "";
-  if (notesText) {
-    const notesNode = fieldNodes["notes"];
-    if (notesNode) {
-      const existing =
-        typeof notesNode.characters === "string" ? notesNode.characters : "";
-      if (osReviewFieldIsRealText(existing, "notes") && overwrite !== true) {
-        skipped.push(OS_ANALYZE_FIELD_LABELS.notes);
-      } else {
-        const ok = await osSetTextNodeCharacters(notesNode, notesText, tokens.textColor);
-        if (ok) applied.push(OS_ANALYZE_FIELD_LABELS.notes);
-      }
+      const ok = await osSetTextNodeCharacters(descNode, desc, tokens.mutedTextColor);
+      if (ok) applied.push("Section description");
+      else skipped.push("Section description");
+    } else {
+      skipped.push("Section description");
     }
   }
 
   return {
-    operation: "analyzeDesign",
+    operation: "sectionMeta",
     sectionId: sectionId,
-    cardId: cardId,
-    cardName: osCardDisplayName(card),
+    sectionName: section.name || "",
     applied: applied,
     skipped: skipped,
     engineVersion: OS_ENGINE_VERSION,
@@ -5488,19 +5703,40 @@ function osProbeOrganizeScreensContext() {
     result.capabilities = osBoardTypeCapabilities(editedBoardType);
 
     // Analyze Design eligibility (presentation only; the runtime re-resolves
-    // the target at run time). Trimmed to what the UI renders.
+    // the target at run time). Trimmed to what the UI renders. A single card
+    // selection is card-scoped; otherwise a Design Review section is
+    // section-scoped (all its standard review screens).
     const ad = osResolveAnalyzeDesignTarget();
-    result.analyzeDesign = {
-      eligible: ad.eligible === true,
-      reason: ad.reason,
-      sectionId: ad.sectionId,
-      cardId: ad.cardId,
-      frameId: ad.frameId,
-      cardName: ad.cardName,
-      frameworkId: ad.frameworkId,
-      boardType: ad.boardType,
-      hasExistingContent: ad.hasExistingContent === true,
-    };
+    if (ad.eligible === true) {
+      result.analyzeDesign = {
+        eligible: true,
+        target: "card",
+        sectionId: ad.sectionId,
+        cardId: ad.cardId,
+        frameId: ad.frameId,
+        cardName: ad.cardName,
+        frameworkId: ad.frameworkId,
+        boardType: ad.boardType,
+        hasExistingContent: ad.hasExistingContent === true,
+      };
+    } else {
+      const sectionTarget = osResolveAnalyzeDesignSectionTarget();
+      if (sectionTarget.eligible === true) {
+        result.analyzeDesign = {
+          eligible: true,
+          target: "section",
+          sectionId: sectionTarget.sectionId,
+          sectionName: sectionTarget.sectionName,
+          boardType: sectionTarget.boardType,
+          screenCount: sectionTarget.screenCount,
+        };
+      } else {
+        result.analyzeDesign = {
+          eligible: false,
+          reason: ad.reason,
+        };
+      }
+    }
   }
   return result;
 }
@@ -6111,11 +6347,24 @@ async function organizeScreensFromSelection(params) {
 
 
 
+
+
+
+
+
+
+
+
+
+
 export {
   organizeScreensFromSelection,
   osProbeOrganizeScreensContext,
   osApplyBoardEdit,
   osResetBoardToScreens,
   osResolveAnalyzeDesignTarget,
+  osResolveAnalyzeDesignSectionTarget,
   osApplyDesignReviewAnalysis,
+  osResetDesignReviewFields,
+  osApplySectionMeta,
 };

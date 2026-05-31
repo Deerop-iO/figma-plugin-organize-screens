@@ -12,7 +12,7 @@
   "networkAccess": {
     "allowedDomains": [
       "https://www.google-analytics.com",
-      "https://cursor-figma-analyze.vercel.app"
+      "https://figma-plugin-organize-screens.vercel.app"
     ],
     "reasoning": "Anonymous usage analytics to help improve the plugin, plus the Analyze Design (AI) backend hosted on Vercel which proxies to Bonzai (the Bonzai key stays server-side). The local Cursor MCP relay endpoint and the local Analyze Design backend live in devAllowedDomains because this is a local-dev plugin (id: cursor-mcp-plugin-local-dev) that is never submitted to the Figma Community.",
     "devAllowedDomains": [

@@ -8,13 +8,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Section-scoped Describe / Review / Reset** — when a Design Review section
+  (rather than a single card) is selected, the three actions run on every
+  standard review screen in the section. The runtime loops screens (yielding
+  between each) and shows per-screen progress; a confirm dialog reports the
+  screen count before any AI run.
+- **Section title + description synthesis** — section-scoped **Describe** makes
+  one extra text-only Bonzai call that synthesizes a Section Title and Section
+  Description from the per-screen descriptions and writes them to the Overview
+  Header (`osApplySectionMeta`). Review and Reset never touch section meta.
+- **Reset review results** — a local (no-network) Design Review action that
+  returns the review section (What's good / Questions / Concerns / Ideas /
+  Notes) to its default placeholder text. Writes the byte-exact placeholders so
+  recompose re-reads the fields as empty. Leaves the Card Description untouched.
+
+### Changed
+
+- Split the single **Analyze design (AI)** button into two scoped AI actions:
+  **Describe screen** (fills only the Card Description) and **Review design**
+  (fills only the review section). Each makes an independent, scoped Bonzai call
+  so the model returns just what that action writes. A shared busy state
+  disables the other actions while any one is running.
+- Analyze Design backend now accepts **text-only** requests (`imageBase64`
+  optional): a vision request when an image is supplied, otherwise a text-only
+  request — used by the section summary synthesis.
+- Point the Analyze Design client and manifest at the **stable** Vercel alias
+  (`figma-plugin-organize-screens.vercel.app`) instead of a deployment-specific
+  hash URL, so redeploys no longer require updating the URL/manifest.
+
+### Fixed
+
+- Analyze Design now writes the review fields (What's good / Questions /
+  Concerns / Ideas / Notes), not just the Card Description. The apply step fell
+  back to a tag-only (`osReviewField`) lookup that missed boards where the tags
+  were absent or stale; it now resolves each field structurally via the
+  `Review Section / <key>` frame as a fallback.
+
+- Analyze Design: parse Bonzai responses wrapped in markdown `` ```json `` fences
+  (common with `claude-sonnet-4-6` despite `json_object` mode). Normalized on
+  the Vercel route and in `parseModelJsonContent()` before validation.
+
+- Analyze Design: clearer errors when Vercel **Deployment Protection** blocks
+  the API (common symptom: "Failed to fetch" in Figma). README documents the
+  Production → disable Vercel Authentication fix.
+
+### Changed
+
+- Analyze Design always overwrites Card Description and review fields when the
+  model returns content for them (removed placeholder-skip logic and the
+  overwrite confirmation dialog).
+
+- Analyze Design production backend: `manifest.json` `allowedDomains` and
+  `analyzeDesignClient.ts` (`API_BASE`, `ALLOWED_HOSTS`) now point at
+  `figma-plugin-organize-screens-aok9qwydw-io-technology.vercel.app` (replaces
+  the placeholder `cursor-figma-analyze.vercel.app`). Re-import the plugin
+  manifest in Figma Desktop after this change.
+
+### Added
+
 - **Analyze Design (AI)** for Organize Screens Design Review boards. Selecting a
   single Design Review Screen Card reveals an **Analyze design (AI)** action that
   exports the screen (PNG, 1024px wide), sends it to a Vercel-hosted Bonzai
   vision backend, validates the structured JSON response, and fills the card's
   **Card Description** and review fields (`workingWell`, `questions`, `concerns`,
-  `ideas`, `notes`). Existing non-placeholder text is preserved unless the user
-  confirms overwrite. The Bonzai key stays server-side: the plugin talks only to
+  `ideas`, `notes`). The Bonzai key stays server-side: the plugin talks only to
   its own backend (`vercel-backend/api/bonzai/analyze-design.ts`). New shared
   analysis module (`src/analysis/designReview.ts`) owns the v1 schema, validator,
   and prompt builders behind an extensible `ANALYSIS_MODES` registry; engine adds

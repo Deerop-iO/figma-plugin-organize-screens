@@ -34,7 +34,7 @@ import {
   applyBoardEdit,
   resetBoardToScreens,
 } from "./runtime/skills";
-import { runAnalyzeDesign } from "./runtime/analyze-design";
+import { runAnalyzeDesign, runResetReview } from "./runtime/analyze-design";
 import {
   getDocumentInfo,
   getSelection,
@@ -202,7 +202,10 @@ figma.ui.onmessage = async (msg) => {
       await resetBoardToScreens(msg.sectionId);
       break;
     case "analyze-design":
-      await runAnalyzeDesign(msg.overwrite === true);
+      await runAnalyzeDesign(msg.scope, msg.target);
+      break;
+    case "reset-review":
+      await runResetReview(msg.target);
       break;
   }
 };

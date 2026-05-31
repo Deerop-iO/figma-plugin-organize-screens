@@ -281,15 +281,32 @@ function renderOrganizeScreens(
   flowBtn.hidden = true;
   runSection.appendChild(flowBtn);
 
-  // Design Review only: analyze the selected screen card with AI and fill its
-  // description + review fields. Lit up by the runtime's `analyzeDesign`
-  // eligibility, independent of the generate/apply primary action.
-  const analyzeBtn = document.createElement("button");
-  analyzeBtn.type = "button";
-  analyzeBtn.className = "button button-secondary button-block";
-  analyzeBtn.textContent = "Analyze design (AI)";
-  analyzeBtn.hidden = true;
-  runSection.appendChild(analyzeBtn);
+  // Design Review only: three scoped actions on the selected screen card. Lit
+  // up by the runtime's `analyzeDesign` eligibility, independent of the
+  // generate/apply primary action.
+  //   - Describe screen (AI): fills only the Card Description.
+  //   - Review design (AI): fills only the review section.
+  //   - Reset review results (local): review fields back to placeholders.
+  const describeBtn = document.createElement("button");
+  describeBtn.type = "button";
+  describeBtn.className = "button button-secondary button-block";
+  describeBtn.textContent = "Describe screen (AI)";
+  describeBtn.hidden = true;
+  runSection.appendChild(describeBtn);
+
+  const reviewBtn = document.createElement("button");
+  reviewBtn.type = "button";
+  reviewBtn.className = "button button-secondary button-block";
+  reviewBtn.textContent = "Review design (AI)";
+  reviewBtn.hidden = true;
+  runSection.appendChild(reviewBtn);
+
+  const resetReviewBtn = document.createElement("button");
+  resetReviewBtn.type = "button";
+  resetReviewBtn.className = "button button-secondary button-block";
+  resetReviewBtn.textContent = "Reset review results";
+  resetReviewBtn.hidden = true;
+  runSection.appendChild(resetReviewBtn);
 
   const analyzeHint = document.createElement("p");
   analyzeHint.className = "footnote";
@@ -427,24 +444,46 @@ function renderOrganizeScreens(
     return !!(currentAnalyze && currentAnalyze.eligible);
   }
 
-  function setAnalyzeBusy(b: boolean) {
+  // Which analyze action is in flight, so only that button shows a spinner
+  // label while all three (plus run/flow) stay disabled.
+  let analyzeBusyAction: "describe" | "review" | "resetReview" | null = null;
+
+  function setAnalyzeBusy(b: boolean, action?: "describe" | "review" | "resetReview") {
     analyzeBusy = b;
-    analyzeBtn.textContent = b ? "Analyzing..." : "Analyze design (AI)";
-    analyzeBtn.disabled = b || busy || !analyzeEligible();
+    analyzeBusyAction = b ? action || null : null;
     runBtn.disabled = busy || b || currentMode === "unsupported";
     flowBtn.disabled = busy || b || !currentFlowEligible;
+    refreshAnalyzeButton();
   }
 
   function refreshAnalyzeButton() {
     const eligible = analyzeEligible();
-    analyzeBtn.hidden = !eligible;
-    analyzeBtn.disabled = busy || analyzeBusy || !eligible;
+    const disabled = busy || analyzeBusy || !eligible;
+
+    describeBtn.hidden = !eligible;
+    reviewBtn.hidden = !eligible;
+    resetReviewBtn.hidden = !eligible;
+
+    describeBtn.disabled = disabled;
+    reviewBtn.disabled = disabled;
+    resetReviewBtn.disabled = disabled;
+
+    describeBtn.textContent =
+      analyzeBusyAction === "describe" ? "Describing..." : "Describe screen (AI)";
+    reviewBtn.textContent =
+      analyzeBusyAction === "review" ? "Reviewing..." : "Review design (AI)";
+    resetReviewBtn.textContent =
+      analyzeBusyAction === "resetReview" ? "Resetting..." : "Reset review results";
+
     analyzeHint.hidden = !eligible;
     if (eligible) {
-      analyzeHint.textContent =
-        currentAnalyze && currentAnalyze.hasExistingContent
-          ? "Generates a description and review feedback from this screen. This card already has content — you'll confirm before overwriting."
-          : "Generates a description and review feedback for this screen using AI.";
+      const isSection = !!(currentAnalyze && currentAnalyze.target === "section");
+      const n = (currentAnalyze && currentAnalyze.screenCount) || 0;
+      analyzeHint.textContent = isSection
+        ? "Runs on all " +
+          n +
+          " screens in this section. Describe fills each screen description plus the section title and description; Review fills each review section (both AI). Reset returns every review section to placeholders."
+        : "Describe fills the screen description; Review fills the review section (both AI, overwriting existing text). Reset returns the review section to placeholders.";
     }
   }
 
@@ -860,31 +899,78 @@ function renderOrganizeScreens(
     });
   });
 
-  // ---------- Analyze design (AI) handler ----------
-  analyzeBtn.addEventListener("click", async () => {
+  // ---------- Analyze design handlers (Describe / Review / Reset) ----------
+  function analyzeTarget(): "card" | "section" {
+    return currentAnalyze && currentAnalyze.target === "section" ? "section" : "card";
+  }
+
+  async function startAnalyze(scope: "describe" | "review") {
     if (busy || analyzeBusy) return;
     if (!analyzeEligible()) return;
 
-    let overwrite = false;
-    if (currentAnalyze && currentAnalyze.hasExistingContent) {
+    const target = analyzeTarget();
+    if (target === "section") {
+      const n = (currentAnalyze && currentAnalyze.screenCount) || 0;
+      const verb = scope === "describe" ? "Describe" : "Review";
       const ok = await inlineConfirm({
-        title: "Overwrite existing review?",
-        body: "This screen already has a description or review feedback. Replace it with AI-generated analysis? This can't be undone from the panel.",
-        confirmLabel: "Overwrite",
+        title: verb + " all " + n + " screens?",
+        body:
+          "This runs the AI on every screen in this section (" +
+          n +
+          " calls)" +
+          (scope === "describe"
+            ? ", then writes the section title and description."
+            : ".") +
+          " Existing text in those fields is overwritten.",
+        confirmLabel: verb,
         cancelLabel: "Cancel",
-        destructive: true,
       });
       if (!ok) return;
-      overwrite = true;
+      if (busy || analyzeBusy) return;
+      if (!analyzeEligible()) return;
     }
 
-    setAnalyzeBusy(true);
+    setAnalyzeBusy(true, scope);
     resultHost.innerHTML = "";
     ctx.trackEvent("organize_screens_analyze", {
+      scope,
+      target,
+      screenCount: (currentAnalyze && currentAnalyze.screenCount) || 0,
       hasExistingContent: !!(currentAnalyze && currentAnalyze.hasExistingContent),
-      overwrite,
     });
-    ctx.send({ type: "analyze-design", mode: "designReview", overwrite });
+    ctx.send({ type: "analyze-design", scope, target });
+  }
+
+  describeBtn.addEventListener("click", () => startAnalyze("describe"));
+  reviewBtn.addEventListener("click", () => startAnalyze("review"));
+
+  resetReviewBtn.addEventListener("click", async () => {
+    if (busy || analyzeBusy) return;
+    if (!analyzeEligible()) return;
+
+    const target = analyzeTarget();
+    const n = (currentAnalyze && currentAnalyze.screenCount) || 0;
+    const body =
+      target === "section"
+        ? "This clears the review section (What's good, Questions, Concerns, Ideas, Notes) on all " +
+          n +
+          " screens back to placeholder text, removing both AI-generated and hand-written feedback. Screen descriptions and the section title/description are left unchanged."
+        : "This clears the review section (What's good, Questions, Concerns, Ideas, Notes) back to placeholder text, removing both AI-generated and hand-written feedback. The screen description is left unchanged.";
+
+    const ok = await inlineConfirm({
+      title: target === "section" ? "Reset review on " + n + " screens?" : "Reset review results?",
+      body,
+      confirmLabel: "Reset",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    if (busy || analyzeBusy) return;
+    if (!analyzeEligible()) return;
+
+    setAnalyzeBusy(true, "resetReview");
+    resultHost.innerHTML = "";
+    ctx.trackEvent("organize_screens_reset_review", { target, screenCount: n });
+    ctx.send({ type: "reset-review", target });
   });
 
   // ---------- Reset-to-screens handler ----------
@@ -1050,29 +1136,52 @@ function renderOrganizeScreens(
     resultHost.appendChild(block);
   }
 
-  function analyzeProgressLabel(phase: string): string {
+  function analyzeProgressLabel(phase: string, message?: string): string {
+    if (message) return message;
     if (phase === "exporting") return "Exporting screen\u2026";
     if (phase === "analyzing") return "Analyzing design with AI\u2026";
     if (phase === "applying") return "Writing feedback to the card\u2026";
     return "Working\u2026";
   }
 
+  function analyzeOperationLabel(
+    operation: "describe" | "review" | "resetReview",
+    target?: "card" | "section"
+  ): string {
+    const suffix = target === "section" ? " (section)" : "";
+    if (operation === "describe") return "Describe screen" + suffix;
+    if (operation === "resetReview") return "Reset review results" + suffix;
+    return "Review design" + suffix;
+  }
+
   function renderAnalyzeResult(
+    operation: "describe" | "review" | "resetReview",
     applied: string[],
     skipped: string[],
-    cardName?: string
+    cardName?: string,
+    target?: "card" | "section",
+    screenCount?: number
   ) {
     resultHost.innerHTML = "";
     const block = document.createElement("div");
     block.className = "result";
 
-    const summary: Array<[string, string]> = [["Operation", "Analyze design"]];
-    if (cardName) summary.push(["Screen", cardName]);
+    const updatedEmpty =
+      operation === "resetReview"
+        ? "Nothing (already at placeholders)"
+        : "Nothing (no new content)";
+    const summary: Array<[string, string]> = [
+      ["Operation", analyzeOperationLabel(operation, target)],
+    ];
+    if (cardName) summary.push([target === "section" ? "Section" : "Screen", cardName]);
+    if (target === "section" && typeof screenCount === "number") {
+      summary.push(["Screens", String(screenCount)]);
+    }
     summary.push([
-      "Updated",
-      applied.length ? applied.join(", ") : "Nothing (no new content)",
+      operation === "resetReview" ? "Reset" : "Updated",
+      applied.length ? applied.join(", ") : updatedEmpty,
     ]);
-    if (skipped.length) summary.push(["Kept existing", skipped.join(", ")]);
+    if (skipped.length) summary.push(["Could not update", skipped.join(", ")]);
 
     for (const [k, v] of summary) {
       const row = document.createElement("div");
@@ -1102,10 +1211,17 @@ function renderOrganizeScreens(
       setBusy(false);
       renderError(msg.error);
     } else if (msg.type === "analyze-design-progress") {
-      renderInfo(analyzeProgressLabel(msg.phase));
+      renderInfo(analyzeProgressLabel(msg.phase, msg.message));
     } else if (msg.type === "analyze-design-result") {
       setAnalyzeBusy(false);
-      renderAnalyzeResult(msg.applied, msg.skipped, msg.cardName);
+      renderAnalyzeResult(
+        msg.operation,
+        msg.applied,
+        msg.skipped,
+        msg.cardName,
+        msg.target,
+        msg.screenCount
+      );
     } else if (msg.type === "analyze-design-error") {
       setAnalyzeBusy(false);
       renderError(msg.message);

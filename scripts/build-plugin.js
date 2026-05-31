@@ -36,7 +36,10 @@ const EXPORT_FOOTER =
   "  osApplyBoardEdit,\n" +
   "  osResetBoardToScreens,\n" +
   "  osResolveAnalyzeDesignTarget,\n" +
+  "  osResolveAnalyzeDesignSectionTarget,\n" +
   "  osApplyDesignReviewAnalysis,\n" +
+  "  osResetDesignReviewFields,\n" +
+  "  osApplySectionMeta,\n" +
   "};\n";
 
 function extractBetween(source, startMarker, endMarker) {

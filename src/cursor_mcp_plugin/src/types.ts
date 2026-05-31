@@ -104,21 +104,28 @@ export interface AnalyzeDesignEligibility {
   eligible: boolean;
   /** Human-readable explanation when `eligible` is false. */
   reason?: string;
+  /**
+   * Scope of the eligible action: a single Screen Card, or every standard
+   * review screen in the selected section. Drives the panel's button copy and
+   * the `target` sent back on the action message.
+   */
+  target?: "card" | "section";
   /** Owning board section id (for re-resolution at apply time). */
   sectionId?: string;
-  /** Selected Screen Card id. */
+  /** Selected Screen Card id (card target only). */
   cardId?: string;
-  /** Embedded screen frame id (the node exported for analysis). */
+  /** Embedded screen frame id (card target only). */
   frameId?: string;
-  /** Display name of the card (for progress/result copy). */
+  /** Display name of the card (card target only). */
   cardName?: string;
+  /** Section name (section target only). */
+  sectionName?: string;
+  /** Number of standard review screens in the section (section target only). */
+  screenCount?: number;
   /** Review framework — v1 supports the standard single-screen review only. */
   frameworkId?: "standard";
   boardType?: BoardType;
-  /**
-   * True when the card already has real (non-placeholder) review text or a
-   * non-empty Card Description. Drives the overwrite confirmation in the UI.
-   */
+  /** True when the card already has review text or a Card Description (UI hint). */
   hasExistingContent?: boolean;
 }
 
@@ -259,13 +266,20 @@ export type UiToPluginMessage =
       sectionId: string;
     }
   | {
-      // AI Analyze Design: export the selected Design Review card's screen,
-      // send it to the Bonzai vision backend, and write the result into the
-      // card's review fields. `overwrite` replaces existing real text; when
-      // false, only empty/placeholder fields are filled.
+      // AI Analyze Design: export the target screen(s), send to the Bonzai
+      // vision backend, and overwrite matching text fields. `scope` narrows the
+      // write: "describe" fills the Card Description (+ Section Title/Description
+      // for section target), "review" fills the review section. `target`
+      // selects a single card or every standard review screen in a section.
       type: "analyze-design";
-      mode: "designReview";
-      overwrite: boolean;
+      scope: "describe" | "review";
+      target: "card" | "section";
+    }
+  | {
+      // Offline reset: set the review section fields back to their default
+      // placeholder text. No network call. `target` is one card or the section.
+      type: "reset-review";
+      target: "card" | "section";
     };
 
 export type PluginToUiMessage =
@@ -301,11 +315,18 @@ export type PluginToUiMessage =
     }
   | {
       type: "analyze-design-result";
-      /** Human-readable labels of fields written. */
+      /** Which action produced this result, so the panel can label it. */
+      operation: "describe" | "review" | "resetReview";
+      /** Whether the action ran on one card or a whole section. */
+      target?: "card" | "section";
+      /** Human-readable labels of fields/screens written. */
       applied: string[];
-      /** Human-readable labels of fields left untouched (existing content). */
+      /** Human-readable labels of fields/screens that could not be updated. */
       skipped: string[];
+      /** Card name (card target) or section name (section target). */
       cardName?: string;
+      /** Total screens processed (section target). */
+      screenCount?: number;
     }
   | {
       // Always redacted before it reaches the UI (no raw upstream bodies).

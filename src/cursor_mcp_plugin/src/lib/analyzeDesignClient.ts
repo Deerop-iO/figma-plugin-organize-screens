@@ -16,18 +16,24 @@
  * production origin).
  */
 
-// Dev default. Set to the deployed Vercel origin for production builds.
-const API_BASE = "http://localhost:3000";
+// Stable production alias (updated on every `vercel --prod`, so redeploys do
+// not require touching this). Use `http://localhost:3000` while running
+// `vercel dev`.
+const API_BASE = "https://figma-plugin-organize-screens.vercel.app";
 
 // Hardcoded host allowlist (sandbox-safe — never derived from API_BASE at
 // runtime). Mirror of manifest allowedDomains ∪ devAllowedDomains hostnames.
-const ALLOWED_HOSTS = ["localhost", "cursor-figma-analyze.vercel.app"];
+const ALLOWED_HOSTS = [
+  "localhost",
+  "figma-plugin-organize-screens.vercel.app",
+];
 
 const REQUEST_TIMEOUT_MS = 45000;
 
 export interface AnalyzeDesignBackendRequest {
-  imageBase64: string;
-  mimeType: string;
+  /** Omit for text-only requests (e.g. section-summary synthesis). */
+  imageBase64?: string;
+  mimeType?: string;
   systemContext: string;
   instruction: string;
   model?: string;
@@ -77,6 +83,40 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+/** Map sandbox/network errors to actionable copy (e.g. Vercel SSO wall). */
+function formatFetchFailure(message: string, status?: number, bodyPreview?: string): string {
+  const lower = message.toLowerCase();
+  const looksLikeVercelAuth =
+    status === 401 ||
+    (bodyPreview &&
+      (bodyPreview.indexOf("Authentication Required") !== -1 ||
+        bodyPreview.indexOf("vercel.com/sso-api") !== -1));
+
+  if (looksLikeVercelAuth) {
+    return (
+      "The Vercel deployment is behind Deployment Protection (login required). " +
+      "In the Vercel project: Settings → Deployment Protection → disable " +
+      "Vercel Authentication for Production (or allow public access to API routes), " +
+      "then redeploy. The Figma plugin cannot sign in to Vercel."
+    );
+  }
+
+  if (
+    lower.indexOf("failed to fetch") !== -1 ||
+    lower.indexOf("network request failed") !== -1
+  ) {
+    return (
+      "Could not reach the analysis backend (network or CORS). " +
+      "If the Vercel URL opens a login page in the browser, turn off Deployment " +
+      "Protection for Production. Otherwise confirm the plugin manifest lists " +
+      API_BASE +
+      " in allowedDomains and that you re-imported the manifest after changing it."
+    );
+  }
+
+  return message || "Could not reach the analysis backend.";
+}
+
 export async function requestAnalyzeDesign(
   body: AnalyzeDesignBackendRequest
 ): Promise<AnalyzeDesignBackendData> {
@@ -94,18 +134,19 @@ export async function requestAnalyzeDesign(
       REQUEST_TIMEOUT_MS
     );
   } catch (error: any) {
-    throw new Error(
-      redactSecrets((error && error.message) || "Could not reach the analysis backend.")
-    );
+    const raw = (error && error.message) || "";
+    throw new Error(redactSecrets(formatFetchFailure(raw)));
   }
 
   const text = await response.text().catch(() => "");
   if (!response.ok) {
+    const preview = redactSecrets(text).slice(0, 300);
     throw new Error(
-      "Analysis backend HTTP " +
-        response.status +
-        ": " +
-        redactSecrets(text).slice(0, 300)
+      formatFetchFailure(
+        "Analysis backend HTTP " + response.status + ": " + preview,
+        response.status,
+        preview
+      )
     );
   }
 

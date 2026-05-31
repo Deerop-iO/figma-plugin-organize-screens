@@ -81,6 +81,35 @@ function asStringList(value: unknown): string[] {
 }
 
 /**
+ * Parse model text that may be raw JSON, fenced markdown, or JSON embedded in
+ * prose. Bonzai often returns ```json ... ``` even when `response_format:
+ * json_object` is set.
+ */
+export function parseModelJsonContent(raw: string): unknown {
+  let text = raw.trim();
+  const fenced = /^```(?:json)?\s*\r?\n?([\s\S]*?)\r?\n?```\s*$/i.exec(text);
+  if (fenced) {
+    text = fenced[1].trim();
+  } else if (text.indexOf("```") === 0) {
+    text = text
+      .replace(/^```(?:json)?\s*\r?\n?/i, "")
+      .replace(/\r?\n?```\s*$/i, "")
+      .trim();
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (firstError) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw firstError;
+  }
+}
+
+/**
  * Validate + coerce raw model output (a JSON string or an already-parsed
  * object) into a `DesignReviewAnalysisV1`. Empty list items are dropped, lists
  * are clamped, and a declared `skippedReason` short-circuits to a non-ok
@@ -90,7 +119,7 @@ export function validateDesignReviewAnalysis(raw: unknown): ValidationResult {
   let parsed: unknown = raw;
   if (typeof raw === "string") {
     try {
-      parsed = JSON.parse(raw);
+      parsed = parseModelJsonContent(raw);
     } catch (e) {
       return { ok: false, error: "Response was not valid JSON." };
     }
@@ -147,21 +176,42 @@ export function validateDesignReviewAnalysis(raw: unknown): ValidationResult {
   return { ok: true, value };
 }
 
-const SYSTEM_CONTEXT = [
+/**
+ * Analysis scope. The UI exposes two AI actions backed by the same schema and
+ * validator: `describe` fills only the Card Description; `review` fills only the
+ * review section. Scoping is prompt-only so the model returns just what each
+ * action needs (lower token cost, less chance of hallucinating the other half).
+ */
+export type AnalysisScope = "describe" | "review";
+
+const SYSTEM_CONTEXT_HEADER = [
   "You are a senior product designer participating in a design review of a single screen.",
   "You are given a screenshot of one screen/frame from a Figma board.",
-  "Write concise, specific, professional review feedback as if leaving comments for the design team.",
   "",
   "Rules:",
   "- Base every observation on what is visible in the screenshot. Do not invent business context, data, or flows you cannot see.",
   "- Prefer questions over assumptions when intent is unclear.",
   "- Be concrete and actionable. No marketing language, no generic filler, no praise padding.",
-  "- Keep each bullet to a single short sentence. Use at most three bullets per list.",
-  "- The card description is documentation tone: 1-3 sentences describing what this screen is and does.",
+];
+
+const DESCRIBE_BODY = [
+  "Your task: write a documentation-tone description of what this screen is and does (1-3 sentences).",
   "",
   "Return ONLY a JSON object with this exact shape (no markdown, no prose outside the JSON):",
   "{",
-  '  "cardDescription": string,',
+  '  "cardDescription": string,   // 1-3 sentences describing the screen',
+  '  "meta": { "confidence": "low" | "medium" | "high", "skippedReason": string }',
+  "}",
+  "Leave the review fields out entirely; this action only documents the screen.",
+  'If the screenshot is unreadable or not a UI screen, return meta.skippedReason explaining why and leave cardDescription empty.',
+];
+
+const REVIEW_BODY = [
+  "Your task: write concise, specific review feedback as if leaving comments for the design team.",
+  "- Keep each bullet to a single short sentence. Use at most three bullets per list.",
+  "",
+  "Return ONLY a JSON object with this exact shape (no markdown, no prose outside the JSON):",
+  "{",
   '  "workingWell": string[],   // what works well in the design',
   '  "questions": string[],     // open questions for the team',
   '  "concerns": string[],      // risks, usability or clarity issues',
@@ -169,17 +219,24 @@ const SYSTEM_CONTEXT = [
   '  "notes": string,           // optional, any additional feedback',
   '  "meta": { "confidence": "low" | "medium" | "high", "skippedReason": string }',
   "}",
-  'If the screenshot is unreadable or not a UI screen, return meta.skippedReason explaining why and leave the other fields empty.',
-].join("\n");
+  "Do not include a cardDescription; this action only fills the review section.",
+  'If the screenshot is unreadable or not a UI screen, return meta.skippedReason explaining why and leave the review fields empty.',
+];
 
-export function buildDesignReviewSystemContext(): string {
-  return SYSTEM_CONTEXT;
+export function buildDesignReviewSystemContext(scope: AnalysisScope = "review"): string {
+  const body = scope === "describe" ? DESCRIBE_BODY : REVIEW_BODY;
+  return SYSTEM_CONTEXT_HEADER.concat("").concat(body).join("\n");
 }
 
-export function buildDesignReviewInstruction(ctx?: AnalysisContext): string {
-  const lines: string[] = [
-    "Review the attached screen and produce the JSON described in the system instructions.",
-  ];
+export function buildDesignReviewInstruction(
+  scope: AnalysisScope = "review",
+  ctx?: AnalysisContext
+): string {
+  const lead =
+    scope === "describe"
+      ? "Describe the attached screen and produce the JSON described in the system instructions."
+      : "Review the attached screen and produce the JSON described in the system instructions.";
+  const lines: string[] = [lead];
   if (ctx) {
     const meta: string[] = [];
     if (ctx.frameName) meta.push('Frame name: "' + ctx.frameName + '"');
@@ -199,8 +256,8 @@ export function buildDesignReviewInstruction(ctx?: AnalysisContext): string {
 export interface AnalysisMode<T> {
   id: string;
   version: number;
-  buildSystemContext(): string;
-  buildInstruction(ctx?: AnalysisContext): string;
+  buildSystemContext(scope?: AnalysisScope): string;
+  buildInstruction(scope?: AnalysisScope, ctx?: AnalysisContext): string;
   validate(raw: unknown):
     | { ok: true; value: T }
     | { ok: false; error: string; skippedReason?: string };
@@ -227,3 +284,107 @@ export const designReviewMode: AnalysisMode<DesignReviewAnalysisV1> = {
 export const ANALYSIS_MODES = {
   designReview: designReviewMode,
 };
+
+// ---------------------------------------------------------------------------
+// Section summary (text-only synthesis).
+//
+// After section-scope "Describe" fills each screen's Card Description, the
+// runtime sends the collected per-screen descriptions to this text-only call
+// (no image) to produce a Section Title + Section Description for the board's
+// Overview Header. Same fence-tolerant parsing; its own tiny schema/validator.
+// ---------------------------------------------------------------------------
+
+export interface SectionMetaV1 {
+  sectionTitle: string;
+  sectionDescription: string;
+  meta?: {
+    confidence?: "low" | "medium" | "high";
+    skippedReason?: string;
+  };
+}
+
+export interface SectionScreenSummary {
+  name: string;
+  description: string;
+}
+
+export type SectionMetaValidationResult =
+  | { ok: true; value: SectionMetaV1 }
+  | { ok: false; error: string; skippedReason?: string };
+
+export function buildSectionMetaSystemContext(): string {
+  return [
+    "You are a senior product designer summarizing a section of related screens for a design review board.",
+    "You are given short descriptions of each screen in the section (no images).",
+    "",
+    "Rules:",
+    "- Base the summary only on the provided screen descriptions. Do not invent flows, data, or business context you cannot infer from them.",
+    "- The section title is a short label (2-5 words) naming the flow or theme these screens share.",
+    "- The section description is 1-2 sentences explaining what this group of screens covers.",
+    "- No marketing language, no filler.",
+    "",
+    "Return ONLY a JSON object with this exact shape (no markdown, no prose outside the JSON):",
+    "{",
+    '  "sectionTitle": string,',
+    '  "sectionDescription": string,',
+    '  "meta": { "confidence": "low" | "medium" | "high", "skippedReason": string }',
+    "}",
+    "If the descriptions are too sparse to summarize, set meta.skippedReason and leave the other fields empty.",
+  ].join("\n");
+}
+
+export function buildSectionMetaInstruction(screens: SectionScreenSummary[]): string {
+  const lines: string[] = [
+    "Summarize the following " + screens.length + " screens into a section title and description.",
+    "",
+    "Screens:",
+  ];
+  for (let i = 0; i < screens.length; i++) {
+    const name = asString(screens[i] && screens[i].name) || "Screen " + (i + 1);
+    const desc = asString(screens[i] && screens[i].description);
+    lines.push("- " + name + (desc ? ": " + desc : ""));
+  }
+  return lines.join("\n");
+}
+
+export function validateSectionMeta(raw: unknown): SectionMetaValidationResult {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = parseModelJsonContent(raw);
+    } catch (e) {
+      return { ok: false, error: "Response was not valid JSON." };
+    }
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { ok: false, error: "Response was not a JSON object." };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const meta =
+    obj.meta && typeof obj.meta === "object"
+      ? (obj.meta as Record<string, unknown>)
+      : undefined;
+  const skippedReason = meta ? asString(meta.skippedReason) : "";
+  if (skippedReason) {
+    return { ok: false, error: "Model declined to summarize.", skippedReason };
+  }
+
+  const value: SectionMetaV1 = {
+    sectionTitle: asString(obj.sectionTitle),
+    sectionDescription: asString(obj.sectionDescription),
+  };
+
+  if (!value.sectionTitle && !value.sectionDescription) {
+    return { ok: false, error: "Section summary came back empty." };
+  }
+
+  if (meta) {
+    const confidence = asString(meta.confidence);
+    if (confidence === "low" || confidence === "medium" || confidence === "high") {
+      value.meta = { confidence };
+    }
+  }
+
+  return { ok: true, value };
+}

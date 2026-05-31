@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyCors } from "../_lib/cors";
 import { errorResponse, redactSecrets } from "../_lib/errors";
+import { normalizeModelJsonContent } from "../_lib/normalizeModelContent";
 
 /**
  * Analyze Design (Bonzai vision) route.
@@ -92,32 +93,33 @@ export default async function handler(
       process.env.BONZAI_DEFAULT_MODEL ||
       "gpt-4o";
 
-    if (typeof imageBase64 !== "string" || !imageBase64) {
-      errorResponse(res, new Error("Missing imageBase64."), 400);
-      return;
-    }
     if (!instruction) {
       errorResponse(res, new Error("Missing instruction."), 400);
       return;
     }
+    const hasImage = typeof imageBase64 === "string" && imageBase64.length > 0;
 
     const globalPrompt = resolveGlobalSystemPrompt();
     const systemContent = systemContext
       ? globalPrompt + "\n\nPlugin-specific instructions:\n" + systemContext
       : globalPrompt;
 
-    const dataUrl = "data:" + mimeType + ";base64," + imageBase64;
+    // Vision request when an image is supplied; text-only otherwise (used by
+    // the section-summary synthesis, which reasons over screen descriptions).
+    const userContent = hasImage
+      ? [
+          { type: "text", text: instruction },
+          {
+            type: "image_url",
+            image_url: { url: "data:" + mimeType + ";base64," + imageBase64 },
+          },
+        ]
+      : [{ type: "text", text: instruction }];
     const payload = {
       model,
       messages: [
         { role: "system", content: systemContent },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: instruction },
-            { type: "image_url", image_url: { url: dataUrl } },
-          ],
-        },
+        { role: "user", content: userContent },
       ],
       response_format: { type: "json_object" },
       temperature: 0.2,
@@ -168,7 +170,7 @@ export default async function handler(
     res.status(200).json({
       ok: true,
       data: {
-        content,
+        content: normalizeModelJsonContent(content),
         model: (json && json.model) || model,
         usage: json && json.usage,
       },
