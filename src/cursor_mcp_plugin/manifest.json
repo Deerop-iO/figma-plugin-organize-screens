@@ -1,23 +1,24 @@
 {
-  "name": "Cursor MCP Plugin",
-  "id": "1485687494525374295",
+  "name": "Cursor MCP Plugin (local dev)",
+  "id": "cursor-mcp-plugin-local-dev",
   "api": "1.0.0",
-  "main": "code.js",
-  "ui": "ui.html",
-  "editorType": [
-    "figma",
-    "figjam"
+  "main": "dist/code.js",
+  "editorType": ["figma", "figjam"],
+  "menu": [
+    { "name": "Open", "command": "open" },
+    { "name": "Organize Screens", "command": "organize-screens" }
   ],
   "permissions": [],
   "networkAccess": {
     "allowedDomains": [
-      "ws://localhost:3055",
-      "https://www.google-analytics.com"
+      "https://www.google-analytics.com",
+      "https://cursor-figma-analyze.vercel.app"
     ],
-    "reasoning": "Connects to a local Cursor MCP relay; sends anonymous usage events to Google Analytics.",
+    "reasoning": "Anonymous usage analytics to help improve the plugin, plus the Analyze Design (AI) backend hosted on Vercel which proxies to Bonzai (the Bonzai key stays server-side). The local Cursor MCP relay endpoint and the local Analyze Design backend live in devAllowedDomains because this is a local-dev plugin (id: cursor-mcp-plugin-local-dev) that is never submitted to the Figma Community.",
     "devAllowedDomains": [
       "http://localhost:3055",
       "ws://localhost:3055",
+      "http://localhost:3000",
       "https://www.google-analytics.com"
     ]
   },

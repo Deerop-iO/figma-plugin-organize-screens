@@ -18,12 +18,21 @@
     "setup": "./scripts/setup.sh",
     "build": "tsup",
     "build:watch": "tsup --watch",
+    "build:plugin:engine": "bun run scripts/build-plugin.js",
+    "build:plugin:ui": "bun run scripts/build-ui.mjs",
+    "build:plugin": "bun run build:plugin:engine && bun run scripts/build-ui.mjs",
+    "watch:plugin": "bun run scripts/build-ui.mjs --watch",
+    "postbuild:plugin": "bun run scripts/verify-es2019.js src/cursor_mcp_plugin/dist/code.js && bun run scripts/verify-manifest.js src/cursor_mcp_plugin/manifest.json",
+    "verify:plugin": "bun run scripts/verify-es2019.js src/cursor_mcp_plugin/dist/code.js && bun run scripts/verify-manifest.js src/cursor_mcp_plugin/manifest.json",
+    "typecheck:plugin": "tsc --noEmit -p src/cursor_mcp_plugin/tsconfig.json",
     "dev": "bun run build:watch",
     "pub:release": "bun run build && npm publish"
   },
   "devDependencies": {
+    "@figma/plugin-typings": "latest",
     "@types/bun": "latest",
     "bun-types": "^1.2.5",
+    "esbuild": "latest",
     "tsup": "^8.4.0",
     "typescript": "^5.0.0"
   },

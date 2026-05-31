@@ -1,0 +1,15 @@
+<!doctype html>
+<!--
+  Source reference only. Figma loads dist/ui.html (built by scripts/build-ui.mjs).
+  That file inlines styles.css and the bundled ui.ts — no external <script src>
+  or <link href>, because the __html__ iframe cannot load sibling assets.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Talk To Figma MCP Plugin</title>
+  </head>
+  <body>
+    <div id="root" class="shell"></div>
+  </body>
+</html>

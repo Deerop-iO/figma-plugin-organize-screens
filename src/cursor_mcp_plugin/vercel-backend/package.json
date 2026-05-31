@@ -1,0 +1,14 @@
+{
+  "name": "cursor-figma-analyze-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vercel backend for the Cursor MCP plugin Analyze Design (Bonzai vision) route.",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.8.8",
+    "typescript": "^5.4.0"
+  }
+}

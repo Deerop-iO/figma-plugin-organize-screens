@@ -1,25 +1,14 @@
-function uniqBy(arr, predicate) {
-  const cb = typeof predicate === "function" ? predicate : (o) => o[predicate];
-  return [
-    ...arr
-      .reduce((map, item) => {
-        const key = item === null || item === undefined ? item : cb(item);
+// @ts-nocheck
+import { uniqBy } from "./uniqBy";
 
-        map.has(key) || map.set(key, item);
-
-        return map;
-      }, new Map())
-      .values(),
-  ];
-}
 export const setCharacters = async (node, characters, options) => {
-  const fallbackFont = options?.fallbackFont || {
-    family: "Roboto",
+  const fallbackFont = (options && options.fallbackFont) || {
+    family: "Inter",
     style: "Regular",
   };
   try {
     if (node.fontName === figma.mixed) {
-      if (options?.smartStrategy === "prevail") {
+      if (options && options.smartStrategy === "prevail") {
         const fontHashTree = {};
         for (let i = 1; i < node.characters.length; i++) {
           const charFont = node.getRangeFontName(i - 1, i);
@@ -36,9 +25,9 @@ export const setCharacters = async (node, characters, options) => {
         };
         await figma.loadFontAsync(prevailedFont);
         node.fontName = prevailedFont;
-      } else if (options?.smartStrategy === "strict") {
+      } else if (options && options.smartStrategy === "strict") {
         return setCharactersWithStrictMatchFont(node, characters, fallbackFont);
-      } else if (options?.smartStrategy === "experimental") {
+      } else if (options && options.smartStrategy === "experimental") {
         return setCharactersWithSmartMatchFont(node, characters, fallbackFont);
       } else {
         const firstCharFont = node.getRangeFontName(0, 1);
@@ -90,10 +79,8 @@ const setCharactersWithStrictMatchFont = async (
   await figma.loadFontAsync(fallbackFont);
   node.fontName = fallbackFont;
   node.characters = characters;
-  console.log(fontHashTree);
   await Promise.all(
     Object.keys(fontHashTree).map(async (range) => {
-      console.log(range, fontHashTree[range]);
       const [start, end] = range.split("_");
       const [family, style] = fontHashTree[range].split("::");
       const matchedFont = {
@@ -127,7 +114,7 @@ const getDelimiterPos = (str, delimiter, startIdx = 0, endIdx = str.length) => {
 const buildLinearOrder = (node) => {
   const fontTree = [];
   const newLinesPos = getDelimiterPos(node.characters, "\n");
-  newLinesPos.forEach(([newLinesRangeStart, newLinesRangeEnd], n) => {
+  newLinesPos.forEach(([newLinesRangeStart, newLinesRangeEnd]) => {
     const newLinesRangeFont = node.getRangeFontName(
       newLinesRangeStart,
       newLinesRangeEnd
@@ -139,7 +126,7 @@ const buildLinearOrder = (node) => {
         newLinesRangeStart,
         newLinesRangeEnd
       );
-      spacesPos.forEach(([spacesRangeStart, spacesRangeEnd], s) => {
+      spacesPos.forEach(([spacesRangeStart, spacesRangeEnd]) => {
         const spacesRangeFont = node.getRangeFontName(
           spacesRangeStart,
           spacesRangeEnd

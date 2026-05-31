@@ -2339,6 +2339,162 @@ server.tool(
   }
 );
 
+// Organize Screens — composes a presentation board from selected frames, or
+// arranges multiple existing presentation Sections in a grid. Board Types are
+// the primary system: `custom` (the calibrated baseline) or `design-review`
+// (baseline layout + an editable Review Card per screen). Legacy `personality`
+// values map to `custom`.
+server.tool(
+  "organize_screens",
+  "Compose FRAME screens into a presentation board, or arrange multiple existing presentation Sections in a grid. FRAME selection: new Section with overview header + Screen Cards (native size, no rescale). SECTION selection (2+ boards with Section Container): repositions them in a grid. Board Types: `custom` (calibrated baseline) or `design-review` (adds an editable Review Card under each screen). Run with the intended file open in Figma Desktop.",
+  {
+    nodeIds: z.array(z.string()).optional().describe("Optional node IDs (FRAME or SECTION). Falls back to the current selection on the active page."),
+    sectionTitle: z.string().optional().describe("H1 for a new board (FRAME compose only). Defaults to 'Screen Overview'."),
+    sectionDescription: z.string().optional().describe("Subtitle for a new board (FRAME compose only)."),
+    sectionGridGap: z.number().optional().describe("Gap between boards when arranging Sections. Defaults to the baseline section grid gap."),
+    boardType: z.enum(["custom", "design-review"]).optional().describe("Board Type. 'custom' (default) is the calibrated baseline composition. 'design-review' uses the same layout and adds an editable Review Card under each screen (What's good, Questions, Concerns, Ideas, Notes), all native Figma text layers. The status badge is an instance of a document-scoped status COMPONENT_SET (prefers the file's '.Design Review' master when present, otherwise creates 'Review Status' on the assets page). Variant property Status: Draft | Approved | Blocked | Needs work | Ready for dev. Reviewers change it via Figma's variant picker."),
+    personality: z.string().optional().describe("Deprecated alias for `boardType`. Any legacy value (review/presentation/portfolio/workshop/documentation) maps to 'custom'. Prefer `boardType`."),
+    annotations: z
+      .union([
+        z.boolean(),
+        z.object({
+          enabled: z.boolean().optional(),
+          mode: z.enum(["compact", "expanded"]).optional(),
+          position: z.enum(["aboveScreen", "belowDescription"]).optional(),
+        }),
+      ])
+      .optional()
+      .describe("Opt-in annotation slots on each Screen Card. Pass true for default slots, or an object to override mode/position."),
+    orientation: z
+      .enum(["row", "column", "grid"])
+      .optional()
+      .describe("Opt-in screen layout orientation. Omit to preserve the baseline strategy. 'row' places all screens in one horizontal row (no wrap limit). 'column' stacks all screens in one vertical column (no segment limit). 'grid' forms a square-ish grid (column count minimizes |cols − rows|)."),
+    acceptedVariantGroupKeys: z
+      .array(z.string())
+      .optional()
+      .describe("Multi-proposal (A/B/C) acceptance. The runtime auto-detects variant groups from designer-marked parents ('Variants: X' / 'Compare: X') and naming conventions ('Home A'/'Home B', 'Home v1'/'Home v2'). Accepted groups render as a comparison strip with green Pros / red Cons slots per variant. Omit to accept all detected groups; pass [] to treat every screen separately; or pass specific group keys."),
+    flow: z
+      .boolean()
+      .optional()
+      .describe("Show as flow. On a FRAME compose run, overlays one-directional arrows between the generated Screen Cards in reading order."),
+    flowInPlace: z
+      .boolean()
+      .optional()
+      .describe("In-place flow. Draws one-directional arrows between the selected screens (2+ FRAMEs in selection order), or the child screens of each selected SECTION, without composing a board. Takes precedence over compose/arrange. Arrows are vector nodes (connectors are FigJam-only)."),
+    layoutMode: z.string().optional().describe("Deprecated. Any value maps to the `custom` baseline."),
+  },
+  async ({ nodeIds, sectionTitle, sectionDescription, sectionGridGap, boardType, personality, annotations, orientation, acceptedVariantGroupKeys, flow, flowInPlace, layoutMode }: any) => {
+    try {
+      const params: Record<string, unknown> = {};
+      if (Array.isArray(nodeIds) && nodeIds.length) params.nodeIds = nodeIds;
+      if (sectionTitle) params.sectionTitle = sectionTitle;
+      if (sectionDescription) params.sectionDescription = sectionDescription;
+      if (typeof sectionGridGap === "number") params.sectionGridGap = sectionGridGap;
+      if (boardType) params.boardType = boardType;
+      if (personality) params.personality = personality;
+      if (annotations !== undefined) params.annotations = annotations;
+      if (orientation) params.orientation = orientation;
+      if (Array.isArray(acceptedVariantGroupKeys)) params.acceptedVariantGroupKeys = acceptedVariantGroupKeys;
+      if (flow === true) params.flow = true;
+      if (flowInPlace === true) params.flowInPlace = true;
+      if (layoutMode) params.layoutMode = layoutMode;
+
+      const result = await sendCommandToFigma("organize_screens", params);
+      const typed = result as {
+        operation?: string;
+        boardType?: string;
+        sectionId?: string;
+        sectionName?: string;
+        cardCount?: number;
+        sectionCount?: number;
+        columns: number;
+        sectionGridGap?: number;
+        arrowCount?: number;
+        scope?: string;
+        skippedNonFrameCount?: number;
+        skippedNonSectionCount?: number;
+        variantGroups?: Array<{
+          key: string;
+          label: string;
+          variantLabels: string[];
+          cardIds: string[];
+        }>;
+        compositionPlanSummary?: {
+          strategy?: string;
+          rowCount?: number;
+          groupCount?: number;
+          heroIndex?: number | null;
+          cardWidthPolicy?: string;
+          annotations?: { mode: string; position: string } | null;
+        };
+      };
+
+      const boardTypeLabel = typed.boardType ? ` [${typed.boardType}]` : "";
+      const lines: string[] = [];
+      if (typed.operation === "flowArrows") {
+        lines.push(
+          `Drew ${typed.arrowCount ?? 0} flow arrow(s) across the selected ${
+            typed.scope === "sections" ? "section(s)" : "screen(s)"
+          }.`
+        );
+      } else if (typed.operation === "arrangeSectionsGrid") {
+        lines.push(
+          `Arranged ${typed.sectionCount} presentation section(s)${boardTypeLabel} in ${typed.columns} column(s) (${typed.sectionGridGap ?? 1500}px gap).`
+        );
+        if (typed.skippedNonSectionCount && typed.skippedNonSectionCount > 0) {
+          lines.push(
+            `Skipped ${typed.skippedNonSectionCount} non-Section node(s) from the selection.`
+          );
+        }
+      } else {
+        const strategy = typed.compositionPlanSummary?.strategy ?? "grid";
+        lines.push(
+          `Composed presentation board "${typed.sectionName}" (${typed.sectionId})${boardTypeLabel}.`,
+          `Cards: ${typed.cardCount} in ${typed.columns} column(s); strategy: ${strategy}.`
+        );
+        if (typed.compositionPlanSummary?.groupCount) {
+          lines.push(
+            `Grouped into ${typed.compositionPlanSummary.groupCount} cluster(s).`
+          );
+        }
+        if (typed.variantGroups && typed.variantGroups.length > 0) {
+          const labels = typed.variantGroups
+            .map((g) => `${g.label} (${g.variantLabels.join("/")})`)
+            .join(", ");
+          lines.push(
+            `Comparison group(s): ${typed.variantGroups.length} — ${labels}.`
+          );
+        }
+        if (typed.compositionPlanSummary?.annotations) {
+          const ann = typed.compositionPlanSummary.annotations;
+          lines.push(`Annotation slots: ${ann.mode} / ${ann.position}.`);
+        }
+        if (typed.skippedNonFrameCount && typed.skippedNonFrameCount > 0) {
+          lines.push(
+            `Skipped ${typed.skippedNonFrameCount} non-FRAME node(s) from the selection.`
+          );
+        }
+      }
+
+      return {
+        content: [
+          { type: "text", text: lines.join("\n") },
+          { type: "text", text: JSON.stringify(result) },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error organizing screens: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // A tool to get Figma Prototyping Reactions from multiple nodes
 server.tool(
   "get_reactions",
@@ -2526,6 +2682,334 @@ server.tool(
   }
 );
 
+// Create Component Tool
+server.tool(
+  "create_component",
+  "Convert an existing node (typically a frame) into a Figma Component (COMPONENT node). The original node is replaced in place by the new component.",
+  {
+    nodeId: z.string().describe("The ID of the node to convert into a component"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component", { nodeId });
+      const typedResult = result as { id: string; name: string; type: string; message?: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: typedResult.message
+              ? `${typedResult.message} (id: ${typedResult.id})`
+              : `Created component "${typedResult.name}" (${typedResult.type}) with ID: ${typedResult.id}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating component: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Combine As Variants Tool
+server.tool(
+  "combine_as_variants",
+  "Combine multiple existing COMPONENT nodes into a single Component Set with variants. All node IDs must reference COMPONENT-type nodes; their names should follow the 'Property=Value, Property=Value' convention so Figma auto-detects variant properties.",
+  {
+    nodeIds: z.array(z.string()).min(2).describe("Array of COMPONENT node IDs to combine (at least 2)"),
+    parentId: z.string().optional().describe("Optional parent node ID; defaults to the first component's parent (or current page)"),
+  },
+  async ({ nodeIds, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("combine_as_variants", { nodeIds, parentId });
+      const typedResult = result as { id: string; name: string; type: string; childCount: number };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Combined ${typedResult.childCount} components into ${typedResult.type} "${typedResult.name}" (id: ${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error combining as variants: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Reparent Node Tool
+server.tool(
+  "reparent_node",
+  "Move an existing node into a new parent (reparent). Preserves the node's absolute position by default when the new parent has no auto-layout.",
+  {
+    nodeId: z.string().describe("The ID of the node to reparent"),
+    newParentId: z.string().describe("The ID of the new parent (must support children, e.g. FRAME, GROUP, COMPONENT, COMPONENT_SET, PAGE)"),
+    index: z.number().int().nonnegative().optional().describe("Optional zero-based insertion index in the new parent's children array; if omitted the node is appended to the end"),
+    preserveAbsolutePosition: z.boolean().optional().describe("If true (default), keeps the node visually in place by adjusting x/y after reparenting. Ignored if the new parent uses auto-layout."),
+  },
+  async ({ nodeId, newParentId, index, preserveAbsolutePosition }: any) => {
+    try {
+      const result = await sendCommandToFigma("reparent_node", { nodeId, newParentId, index, preserveAbsolutePosition });
+      const typedResult = result as { id: string; name: string; parentId: string; parentName: string; parentType: string; positionPreserved: boolean };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Reparented "${typedResult.name}" (${typedResult.id}) into ${typedResult.parentType} "${typedResult.parentName}" (${typedResult.parentId})${typedResult.positionPreserved ? ", absolute position preserved" : ""}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error reparenting node: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get Local Variables Tool
+server.tool(
+  "get_local_variables",
+  "List all local variables in the current Figma file (colors, numbers, strings, booleans). Returns collections (with mode IDs) and variables (with valuesByMode). Use the variable IDs returned here when calling set_fill_variable / set_stroke_variable.",
+  {
+    resolvedType: z.enum(["BOOLEAN", "FLOAT", "STRING", "COLOR"]).optional().describe("Optional filter: only return variables of this resolved type"),
+  },
+  async ({ resolvedType }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_local_variables", { resolvedType });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing variables: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Fill Variable Tool
+server.tool(
+  "set_fill_variable",
+  "Bind a COLOR variable to one of a node's SOLID fill paints. Works on shape fills and on text fills (text labels). The variable ID must come from get_local_variables.",
+  {
+    nodeId: z.string().describe("The ID of the node whose fill should be bound"),
+    variableId: z.string().describe("The ID of the COLOR variable to bind"),
+    paintIndex: z.number().int().nonnegative().optional().describe("Index into the node's fills array (default 0). If the node has no fills yet, a black SOLID paint is added at index 0 first."),
+  },
+  async ({ nodeId, variableId, paintIndex }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_fill_variable", { nodeId, variableId, paintIndex });
+      const typedResult = result as { id: string; name: string; paintIndex: number; variableId: string; variableName: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Bound variable "${typedResult.variableName}" (${typedResult.variableId}) to fill[${typedResult.paintIndex}] of "${typedResult.name}" (${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding fill variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Stroke Variable Tool
+server.tool(
+  "set_stroke_variable",
+  "Bind a COLOR variable to one of a node's SOLID stroke paints. The variable ID must come from get_local_variables.",
+  {
+    nodeId: z.string().describe("The ID of the node whose stroke should be bound"),
+    variableId: z.string().describe("The ID of the COLOR variable to bind"),
+    paintIndex: z.number().int().nonnegative().optional().describe("Index into the node's strokes array (default 0). If the node has no strokes yet, a black SOLID stroke is added at index 0 first and strokeWeight is set to 1 if it was 0."),
+  },
+  async ({ nodeId, variableId, paintIndex }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_stroke_variable", { nodeId, variableId, paintIndex });
+      const typedResult = result as { id: string; name: string; paintIndex: number; variableId: string; variableName: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Bound variable "${typedResult.variableName}" (${typedResult.variableId}) to stroke[${typedResult.paintIndex}] of "${typedResult.name}" (${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding stroke variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Number Variable Tool
+server.tool(
+  "set_number_variable",
+  "Bind a FLOAT variable to a numeric field on a node. Use for padding, itemSpacing, individual corner radii, strokeWeight, fontSize, opacity, width/height, etc. The variable ID must come from get_local_variables and resolve to FLOAT.",
+  {
+    nodeId: z.string().describe("The ID of the node to bind on"),
+    field: z
+      .enum([
+        "paddingTop",
+        "paddingRight",
+        "paddingBottom",
+        "paddingLeft",
+        "itemSpacing",
+        "counterAxisSpacing",
+        "topLeftRadius",
+        "topRightRadius",
+        "bottomLeftRadius",
+        "bottomRightRadius",
+        "strokeWeight",
+        "fontSize",
+        "lineHeight",
+        "letterSpacing",
+        "paragraphSpacing",
+        "paragraphIndent",
+        "opacity",
+        "width",
+        "height",
+        "minWidth",
+        "minHeight",
+        "maxWidth",
+        "maxHeight",
+        "rotation",
+      ])
+      .describe("The bindable numeric field on the node"),
+    variableId: z.string().describe("The ID of the FLOAT variable to bind"),
+  },
+  async ({ nodeId, field, variableId }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_number_variable", { nodeId, field, variableId });
+      const typedResult = result as { id: string; name: string; field: string; variableId: string; variableName: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Bound variable "${typedResult.variableName}" (${typedResult.variableId}) to ${typedResult.field} of "${typedResult.name}" (${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding number variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Corner Radius Variable Tool (convenience: binds all 4 corners)
+server.tool(
+  "set_corner_radius_variable",
+  "Bind a single FLOAT variable to all four corner radii of a node in one call. Equivalent to calling set_number_variable for topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius.",
+  {
+    nodeId: z.string().describe("The ID of the node whose corners should be bound"),
+    variableId: z.string().describe("The ID of the FLOAT variable to bind to all 4 corners"),
+  },
+  async ({ nodeId, variableId }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_corner_radius_variable", { nodeId, variableId });
+      const typedResult = result as { id: string; name: string; fields: string[]; variableId: string; variableName: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Bound variable "${typedResult.variableName}" (${typedResult.variableId}) to ${typedResult.fields.join(", ")} of "${typedResult.name}" (${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding corner radius variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Node Name Tool
+server.tool(
+  "set_node_name",
+  "Rename a node. Useful for setting variant property strings like 'Variant=Primary, Size=md' before combining as variants.",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().min(1).describe("The new name for the node"),
+  },
+  async ({ nodeId, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_node_name", { nodeId, name });
+      const typedResult = result as { id: string; name: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node ${typedResult.id} to "${typedResult.name}"`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Strategy for converting Figma prototype reactions to connector lines
 server.prompt(
   "reaction_to_connector_strategy",
@@ -2652,7 +3136,17 @@ type FigmaCommand =
   | "set_default_connector"
   | "create_connections"
   | "set_focus"
-  | "set_selections";
+  | "set_selections"
+  | "create_component"
+  | "combine_as_variants"
+  | "reparent_node"
+  | "set_node_name"
+  | "get_local_variables"
+  | "set_fill_variable"
+  | "set_stroke_variable"
+  | "set_number_variable"
+  | "set_corner_radius_variable"
+  | "organize_screens";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -2800,6 +3294,69 @@ type CommandParams = {
   };
   set_selections: {
     nodeIds: string[];
+  };
+  create_component: {
+    nodeId: string;
+  };
+  combine_as_variants: {
+    nodeIds: string[];
+    parentId?: string;
+  };
+  reparent_node: {
+    nodeId: string;
+    newParentId: string;
+    index?: number;
+    preserveAbsolutePosition?: boolean;
+  };
+  set_node_name: {
+    nodeId: string;
+    name: string;
+  };
+  get_local_variables: {
+    resolvedType?: "BOOLEAN" | "FLOAT" | "STRING" | "COLOR";
+  };
+  set_fill_variable: {
+    nodeId: string;
+    variableId: string;
+    paintIndex?: number;
+  };
+  set_stroke_variable: {
+    nodeId: string;
+    variableId: string;
+    paintIndex?: number;
+  };
+  set_number_variable: {
+    nodeId: string;
+    field:
+      | "paddingTop"
+      | "paddingRight"
+      | "paddingBottom"
+      | "paddingLeft"
+      | "itemSpacing"
+      | "counterAxisSpacing"
+      | "topLeftRadius"
+      | "topRightRadius"
+      | "bottomLeftRadius"
+      | "bottomRightRadius"
+      | "strokeWeight"
+      | "fontSize"
+      | "lineHeight"
+      | "letterSpacing"
+      | "paragraphSpacing"
+      | "paragraphIndent"
+      | "opacity"
+      | "width"
+      | "height"
+      | "minWidth"
+      | "minHeight"
+      | "maxWidth"
+      | "maxHeight"
+      | "rotation";
+    variableId: string;
+  };
+  set_corner_radius_variable: {
+    nodeId: string;
+    variableId: string;
   };
 
 };

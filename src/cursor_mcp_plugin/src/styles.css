@@ -1,0 +1,512 @@
+:root {
+  --row-radius: 10px;
+  --card-radius: 8px;
+  --tight-gap: 8px;
+  --gap: 12px;
+  --large-gap: 20px;
+  --section-gap: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 12px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: var(--figma-color-text);
+  background: var(--figma-color-bg);
+}
+
+/* ---------- Shell ---------- */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: var(--tight-gap);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--figma-color-border);
+  background: var(--figma-color-bg);
+}
+
+.shell-back {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--figma-color-text-secondary);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.shell-back:hover {
+  background: var(--figma-color-bg-hover);
+  color: var(--figma-color-text);
+}
+
+.shell-back:focus-visible {
+  outline: 2px solid var(--figma-color-bg-brand);
+  outline-offset: 1px;
+}
+
+.shell-title {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--figma-color-text);
+}
+
+.shell-subtitle {
+  margin: 0;
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+}
+
+.shell-main {
+  flex: 1;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+}
+
+/* ---------- Skill list (landing) ---------- */
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+}
+
+.skill-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight-gap);
+}
+
+.skill-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--figma-color-text-secondary);
+  padding: 0 4px;
+}
+
+.skill-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skill-row {
+  appearance: none;
+  text-align: left;
+  width: 100%;
+  border: 1px solid var(--figma-color-border);
+  background: var(--figma-color-bg-secondary);
+  color: var(--figma-color-text);
+  padding: 10px 12px;
+  border-radius: var(--row-radius);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-row:hover {
+  background: var(--figma-color-bg-hover);
+}
+
+.skill-row:focus-visible {
+  outline: 2px solid var(--figma-color-bg-brand);
+  outline-offset: 1px;
+}
+
+.skill-row-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.skill-row-desc {
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+}
+
+.skill-row-status {
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+}
+
+.skill-row-status--connected {
+  color: var(--figma-color-bg-brand);
+}
+
+/* ---------- Panel scaffolding ---------- */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight-gap);
+}
+
+.panel-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--figma-color-text);
+}
+
+.panel-section-body {
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+  margin: 0;
+}
+
+/* Mode indicator banner used by skills that adapt to selection state
+   (Organize Screens: Generate vs Edit vs Idle). */
+.panel-banner {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--figma-color-bg-secondary);
+  color: var(--figma-color-text);
+  border: 1px solid var(--figma-color-border);
+}
+
+.panel-banner--edit {
+  background: var(--figma-color-bg-brand);
+  color: var(--figma-color-text-onbrand);
+  border-color: var(--figma-color-bg-brand);
+}
+
+.panel-banner--idle {
+  color: var(--figma-color-text-secondary);
+}
+
+/* ---------- Forms ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--figma-color-text);
+  background: var(--figma-color-bg);
+  border: 1px solid var(--figma-color-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+
+.textarea {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: 2px solid var(--figma-color-bg-brand);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.button {
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--figma-color-bg-brand);
+  color: var(--figma-color-text-onbrand);
+}
+
+.button:hover {
+  filter: brightness(0.95);
+}
+
+.button:disabled {
+  background: var(--figma-color-bg-secondary);
+  color: var(--figma-color-text-secondary);
+  cursor: not-allowed;
+  filter: none;
+}
+
+.button-secondary {
+  background: var(--figma-color-bg-secondary);
+  color: var(--figma-color-text);
+  border: 1px solid var(--figma-color-border);
+}
+
+.button-row {
+  display: flex;
+  gap: var(--tight-gap);
+  flex-wrap: wrap;
+}
+
+.button-block {
+  width: 100%;
+}
+
+/* ---------- Status block ---------- */
+
+.status {
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  background: var(--figma-color-bg-secondary);
+  color: var(--figma-color-text);
+  border: 1px solid var(--figma-color-border);
+}
+
+.status--connected {
+  background: var(--figma-color-bg-brand-tertiary, var(--figma-color-bg-secondary));
+  border-color: var(--figma-color-bg-brand);
+  color: var(--figma-color-text);
+}
+
+.status--disconnected {
+  background: var(--figma-color-bg-secondary);
+}
+
+.status--info {
+  background: var(--figma-color-bg-secondary);
+}
+
+.status code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  background: var(--figma-color-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--figma-color-border);
+}
+
+/* ---------- Progress ---------- */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--figma-color-bg-secondary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: calc(var(--p, 0) * 1%);
+  background: var(--figma-color-bg-brand);
+  transition: width 0.3s ease;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--figma-color-text-secondary);
+}
+
+.progress-meta--complete {
+  color: var(--figma-color-bg-brand);
+}
+
+.progress-meta--error {
+  color: var(--figma-color-text);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- Result blocks ---------- */
+
+.result {
+  background: var(--figma-color-bg-secondary);
+  border: 1px solid var(--figma-color-border);
+  border-radius: var(--card-radius);
+  padding: 10px 12px;
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tight-gap);
+}
+
+.result-key {
+  color: var(--figma-color-text-secondary);
+}
+
+.result-value {
+  color: var(--figma-color-text);
+  font-weight: 500;
+}
+
+.result-error {
+  color: var(--figma-color-text);
+  background: var(--figma-color-bg-secondary);
+  border: 1px solid var(--figma-color-border);
+  border-radius: var(--card-radius);
+  padding: 10px 12px;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+/* ---------- Footnote ---------- */
+
+.footnote {
+  font-size: 10px;
+  color: var(--figma-color-text-secondary);
+}
+
+.link {
+  color: var(--figma-color-bg-brand);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* ---------- Comparison (variant) groups ---------- */
+
+.variant-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight-gap);
+  margin-top: var(--tight-gap);
+}
+
+.variant-group-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tight-gap);
+  font-size: 11px;
+  color: var(--figma-color-text);
+  cursor: pointer;
+}
+
+.link-button {
+  align-self: flex-start;
+  margin-top: var(--tight-gap);
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 10px;
+  color: var(--figma-color-bg-brand);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* ---------- Inline confirm helper ---------- */
+
+.inline-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+}
+
+.inline-confirm-sheet {
+  background: var(--figma-color-bg);
+  color: var(--figma-color-text);
+  border: 1px solid var(--figma-color-border);
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 320px;
+  width: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inline-confirm-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.inline-confirm-body {
+  font-size: 12px;
+  color: var(--figma-color-text-secondary);
+  margin: 0;
+}
+
+.inline-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.inline-confirm-cancel,
+.inline-confirm-confirm {
+  appearance: none;
+  border: 1px solid var(--figma-color-border);
+  background: var(--figma-color-bg);
+  color: var(--figma-color-text);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.inline-confirm-confirm {
+  background: var(--figma-color-bg-brand);
+  color: var(--figma-color-text-onbrand);
+  border-color: transparent;
+}
+
+.inline-confirm-confirm--destructive {
+  background: var(--figma-color-bg-danger, #d24141);
+  color: #fff;
+}
