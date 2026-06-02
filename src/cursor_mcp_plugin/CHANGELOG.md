@@ -6,8 +6,136 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Review fields did not start as bullet lists by default** — Design Review
+  feedback sections now apply native UNORDERED list formatting to their default
+  placeholder text as well as restored reviewer content, so newly composed
+  "Review Field Text" nodes are list-first. Notes and prose fields remain plain.
+
+- **Review fields lost their bullets after recompose** — Design Review
+  multi-item fields (What's good / Questions / Concerns / Ideas) were only
+  turned into native UNORDERED lists by the AI apply path. The build/recompose
+  path re-created each "Review Field Text" node from the stored multi-line text
+  as plain paragraphs, so the bullets disappeared on the next recompose (Apply
+  changes, board edits, board-type switch) and never appeared on rebuilt boards.
+  List formatting is now applied in the build path too, via a shared
+  `osApplyReviewFieldListFormatting` helper (2+ non-empty lines → UNORDERED,
+  otherwise plain text; placeholders stay plain), so existing boards self-heal
+  on the next recompose.
+
+- **Functional Header confidence note rendered vertically** — the "Confidence:
+  …" note in a Functional Card header was built as a FILL + HEIGHT-autoresize
+  text node while empty, so it collapsed to ~0 width and wrapped one character
+  per line (and stretched the header to ~575px tall). It now hugs its content on
+  a single line. The Create Documentation apply path re-asserts the hug sizing,
+  so boards built before this fix self-heal on the next documentation run.
+
+- **Create Documentation analyzed the wrong frame (empty scaffold instead of the
+  screen)** — on a Functional Analysis card the embedded screen and the
+  `Functional Card` are direct siblings, and `osCardEmbeddedFrame` popped the
+  non-wrapper-named `Functional Card` first and returned it as the "embedded
+  frame". Create Documentation therefore exported a screenshot of the empty
+  functional scaffold, so the model "documented" the template (placeholder
+  fields, save/submit actions, authorship questions) rather than the actual
+  screen. `osCardEmbeddedFrame` now skips the `Functional Card` without
+  descending into it, so the real embedded screen is exported. Design Review was
+  unaffected (its `Review Card` is a layout-wrapper name nested under
+  `Card Body`).
+
+- **Selection-probe traversal lag on large boards** — selecting a Design Review
+  or Functional Analysis board (or a card on one) could still hang the canvas
+  for 1.5-2.5s on a 10-card board even after the debounce/namespace fixes. Two
+  genuine traversal costs are removed: (1) the probe now scopes
+  `figma.skipInvisibleInstanceChildren = true` to its read body (save/restore,
+  so MCP node-inspection and recompose are unaffected); (2) the section
+  eligibility resolvers reuse a single bounded per-card index instead of walking
+  each card's subtree ~4× — the index treats the embedded user screen as a leaf,
+  so a card's cost is O(card layout) instead of O(embedded design). The board-
+  type surface checks (`osBoardHasDesignReviewSurface` /
+  `osBoardHasFunctionalSurface`), which run when a board has no persisted
+  boardType marker, are bounded the same way. Net: probe time on a 10-card board
+  dropped from ~2.5s to ~80-160ms, and marker-less board-type inference from
+  ~200ms/card to ~3ms/card. The apply path is unchanged (it calls the resolvers
+  without the index fast-path).
+
+- **Invalid SharedPluginData namespace (major lag + broken persistence)** — the
+  `organize-screens` engine used `"organize-screens"` as its SharedPluginData
+  namespace, but Figma only allows alphanumeric characters, `_` or `.`. Every
+  `get/setSharedPluginData` call therefore threw, and the exception unwinding in
+  the Figma sandbox cost hundreds of ms per call (a 5-card board's selection
+  probe took 2-4s, making the canvas lag). The namespace is now
+  `"organizeScreens"`, which eliminates the throws and lets board metadata,
+  `flowFrameIds`, review/functional field text, and the boardType marker
+  persist for the first time. A new `scripts/verify-plugin-namespace.js`
+  postbuild check fails the build if any SharedPluginData namespace contains an
+  invalid character, so this cannot regress silently.
+
+- **Canvas lag while the plugin is open** — the selection-context probe no
+  longer runs synchronously on every `selectionchange`. It now runs once per
+  settled selection on a trailing-only debounce (~200ms), and a selection
+  signature guard skips the recompute entirely when a `selectionchange` fires
+  with the same selection. The probe also gates its Analyze Design and Create
+  Documentation eligibility resolvers on the resolved board type, so the
+  full-board scan for the non-matching surface never runs. Marquee/drag-select
+  and rapid clicking on large boards no longer freeze the canvas.
+
+- **Review fields as native unordered lists** — **Review design (AI)** and **Reset review
+  results** now write multi-item review fields (`workingWell`, `questions`, etc.) as
+  Figma native **UNORDERED** list spans (`setRangeListOptions`) instead of joining
+  lines with ad-hoc `•` prefixes. Copy stays verbatim; single-item fields and
+  `notes` remain plain text. Functional Analysis still uses the legacy bullet join.
+
+- **Section Description max width** — Overview Header descriptions wrap at **1620px**
+  instead of stretching full-bleed with the board. Applied at compose, recompose,
+  and when **Describe** writes section meta (migrates legacy FILL nodes).
+
+- **Describe screen (AI)** now updates the section **Section Title** and **Section
+  Description** in the Overview Header for card-scoped runs too (not only
+  section-scoped batches). Previously the header stayed at the default
+  "Screen Overview" when describing a single selected card.
+- **Section-scoped Describe** now re-reads live Card Description text from the
+  canvas before synthesizing the section header (so the summary step always
+  sees what was actually written), derives a title when the model omits one,
+  syncs the Figma section layer name with the new title, and falls back to a
+  local summary when the text-only AI call fails.
+
 ### Added
 
+- **Functional Analyst expert prompt reference** — added a reusable
+  stakeholder-focused prompt for the Functional Analysis flow, ready to be wired
+  into the plugin's Create Documentation prompt builder.
+
+- **Selective flow on Apply Changes** — when editing a board with **Show as
+  flow** on, selecting a **subset of 2+ Screen Cards** and clicking **Apply
+  changes** now draws flow arrows **only between those screens, in selection
+  order**, instead of across every card. Selecting **all** cards returns to the
+  whole-board overlay; any other selection (the section, a single card) leaves
+  the current scope untouched, so an incidental orientation/board-type edit
+  preserves the subset. The scope is persisted in board metadata
+  (`settings.flowFrameIds`) and replayed on later recomposes; removed screens
+  drop out, and a scope with fewer than 2 survivors falls back to whole-board.
+  The panel previews the scope ("Flow: N selected screens") and the Apply
+  confirm states it before committing.
+
+- **Functional Analysis board type** — a third board type alongside Custom and
+  Design Review. It reuses Custom's token scales but uses its own 1–2 column
+  policy and stacks a full-width **Functional Card** under each screen with eight
+  editable documentation sections (Screen Purpose, User Actions, System
+  Behavior, Inputs / Outputs, States, Business Rules, Missing Functionality, Open
+  Questions). Each section is one tagged TEXT node (`osFuncField`); the card
+  frame is tagged `osFuncCard`. Generated/edited text round-trips through
+  recompose and survives Functional → Custom → Functional board-type switches
+  via the metadata `copyBaseline.doc`.
+- **Create Documentation (AI)** — a single adaptive Functional Analysis action
+  (card scope when one card is selected, section scope otherwise) that exports
+  each screen, sends it through the existing Bonzai vision backend with a new
+  `functionalAnalysis` analysis mode, and writes structured functional
+  documentation into the Functional Card. Inputs/Outputs and States are flattened
+  into labelled lines so each section stays a single editable node. A muted
+  confidence note renders in the card header; the model can decline cleanly via
+  `meta.skippedReason`. A local **Reset documentation** action returns the card's
+  sections to placeholders.
 - **Section-scoped Describe / Review / Reset** — when a Design Review section
   (rather than a single card) is selected, the three actions run on every
   standard review screen in the section. The runtime loops screens (yielding
@@ -24,6 +152,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Analyze Design backend route now honors an optional, clamped `max_tokens`
+  (256–2500, default 1200). The functional documentation mode requests a higher
+  ceiling so its eight-section JSON does not truncate; Design Review keeps the
+  default. The `analyzeOneScreen` runtime was parameterized by an analysis
+  binding `(mode, apply, maxTokens)` so Design Review and Functional Analysis
+  share one export → call → validate → apply pipeline with the Design Review
+  output unchanged.
 - Split the single **Analyze design (AI)** button into two scoped AI actions:
   **Describe screen** (fills only the Card Description) and **Review design**
   (fills only the review section). Each makes an independent, scoped Bonzai call

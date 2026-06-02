@@ -3,10 +3,12 @@
 
 // Board Types are the primary system: a deterministic layout profile plus an
 // optional per-card review surface.
-//   - `custom`        — the calibrated baseline (default).
-//   - `design-review` — baseline layout + an editable Review Card per screen.
+//   - `custom`             — the calibrated baseline (default).
+//   - `design-review`      — baseline layout + an editable Review Card per screen.
+//   - `functional-analysis`— baseline token scales + a stacked Functional Card
+//                            per screen for structured functional documentation.
 // Legacy "personality" ids map to `custom`.
-export type BoardType = "custom" | "design-review";
+export type BoardType = "custom" | "design-review" | "functional-analysis";
 
 /** @deprecated Use {@link BoardType}. Retained as an alias for back-compat. */
 export type PersonalityId = BoardType;
@@ -107,6 +109,8 @@ export interface BoardTypeCapabilities {
   flow: boolean;
   /** Review cards (derived from the board type's `reviewCard` profile). */
   reviewCards: boolean;
+  /** Functional documentation tooling (derived from `functionalCard` profile). */
+  documentation: boolean;
 }
 
 /** Identifies a structured feedback field inside a Review Card. */
@@ -131,6 +135,29 @@ export interface ReviewCardConfig {
   sections: Array<"workingWell" | "questions" | "concerns" | "ideas">;
   /** Render the freeform Notes area below the structured sections. */
   notes: boolean;
+}
+
+/** Identifies an editable section TEXT node inside a Functional Card. */
+export type FunctionalSectionKey =
+  | "purpose"
+  | "userActions"
+  | "systemBehavior"
+  | "inputOutput"
+  | "states"
+  | "businessRules"
+  | "missingFunctionality"
+  | "openQuestions";
+
+/**
+ * Per-card functional documentation surface configuration. Present only on
+ * board types that render Functional Cards (e.g. `functional-analysis`);
+ * `null` on layout-only / review-only types. Parallel to {@link ReviewCardConfig};
+ * a board type carries at most one non-null surface.
+ */
+export interface FunctionalCardConfig {
+  enabled: boolean;
+  /** Ordered functional sections rendered as labelled, editable TEXT nodes. */
+  sections: FunctionalSectionKey[];
 }
 
 export interface BoardTypeProfile {
@@ -159,6 +186,12 @@ export interface BoardTypeProfile {
   };
   /** Optional per-card review surface; `null` on layout-only board types. */
   reviewCard: ReviewCardConfig | null;
+  /**
+   * Optional per-card functional documentation surface; `null` unless this is
+   * a `functional-analysis` board. Additive and parallel to `reviewCard`; a
+   * board type carries at most one non-null surface.
+   */
+  functionalCard?: FunctionalCardConfig | null;
 }
 
 /** @deprecated Use {@link BoardTypeProfile}. */
@@ -239,6 +272,14 @@ export interface OrganizeScreensParams {
    * the generated Screen Cards in reading order.
    */
   flow?: boolean;
+  /**
+   * Selective flow scope (recompose/apply path only): ordered embedded
+   * source-frame ids the flow overlay should connect, or null/omitted for a
+   * whole-board overlay. Derived by the engine from the live selection on
+   * Apply; persisted in board metadata (`settings.flowFrameIds`) and reused on
+   * later recomposes until an explicit gesture changes it.
+   */
+  flowFrameIds?: string[] | null;
   /**
    * In-place flow. Draws arrows between the selected screens (or the child
    * screens of each selected section) without composing a board. Takes

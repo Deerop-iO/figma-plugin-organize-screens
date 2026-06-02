@@ -5,7 +5,7 @@ Composition engine for `/organize-screens` v3:
 1. **Compose** — FRAME selection → new presentation board (Section → Overview Header → Screen Cards at native size).
 2. **Arrange sections** — 2+ presentation Sections → grid layout (reposition only).
 
-Behavior is driven by a **Board Type**: `custom` (the calibrated baseline) or `design-review` (the same layout plus an editable Review Card under each singleton screen). Legacy personality ids (review, presentation, portfolio, workshop, documentation) all map to `custom`. See [`.cursor/skills/organize-screens/reference.md`](../../.cursor/skills/organize-screens/reference.md) for tokens, planner rules, board-type profiles, and the Review Card structure. Planned work: [`.cursor/skills/organize-screens/BACKLOG.md`](../../.cursor/skills/organize-screens/BACKLOG.md).
+Behavior is driven by a **Board Type**: `custom` (the calibrated baseline), `design-review` (the same layout plus an editable Review Card under each singleton screen), or `functional-analysis` (a 1–2 column layout with a full-width Functional Card stacked under each screen for structured functional documentation, fillable with AI via **Create Documentation**). Legacy personality ids (review, presentation, portfolio, workshop, documentation) all map to `custom`. See [`.cursor/skills/organize-screens/reference.md`](../../.cursor/skills/organize-screens/reference.md) for tokens, planner rules, board-type profiles, and the Review / Functional Card structure. Planned work: [`.cursor/skills/organize-screens/BACKLOG.md`](../../.cursor/skills/organize-screens/BACKLOG.md).
 
 ## Files
 
@@ -33,4 +33,4 @@ The Cursor skill in `cursor-talk-to-figma-mcp/.cursor/skills/organize-screens/` 
 organizeScreensFromSelection(params?: OrganizeScreensParams): Promise<OrganizeScreensResult>
 ```
 
-See `types.d.ts` for the shape of params, results, and plans. The `boardType` param accepts `custom` (default) or `design-review`; the deprecated `personality` / `layoutMode` params are still accepted and map to `custom`.
+See `types.d.ts` for the shape of params, results, and plans. The `boardType` param accepts `custom` (default), `design-review`, or `functional-analysis`; the deprecated `personality` / `layoutMode` params are still accepted and map to `custom`.

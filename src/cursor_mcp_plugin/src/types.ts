@@ -19,10 +19,12 @@
 
 // Board Types are the primary system: a layout profile plus an optional
 // per-card review surface.
-//   - `custom`        — the calibrated baseline (default).
-//   - `design-review` — baseline layout + an editable Review Card per screen.
+//   - `custom`             — the calibrated baseline (default).
+//   - `design-review`      — baseline layout + an editable Review Card per screen.
+//   - `functional-analysis`— baseline token scales + a stacked Functional Card
+//                            per screen for structured functional documentation.
 // Legacy "personality" ids map to `custom`.
-export type BoardType = "custom" | "design-review";
+export type BoardType = "custom" | "design-review" | "functional-analysis";
 
 /** @deprecated Use {@link BoardType}. Retained as an alias for back-compat. */
 export type PersonalityId = BoardType;
@@ -56,6 +58,13 @@ export interface OrganizeScreensParams {
   acceptedVariantGroupKeys?: string[];
   /** Show as flow: overlay arrows between generated cards on a compose run. */
   flow?: boolean;
+  /**
+   * Selective flow scope (recompose/apply path only): ordered embedded
+   * source-frame ids the flow overlay should connect, or null/omitted for a
+   * whole-board overlay. The engine derives this from the live selection on
+   * Apply, so the UI does not set it; documented here for the engine contract.
+   */
+  flowFrameIds?: string[] | null;
   /** In-place flow: draw arrows between selected screens / section children. */
   flowInPlace?: boolean;
 }
@@ -91,6 +100,8 @@ export interface BoardTypeCapabilities {
   flow: boolean;
   /** Review cards (derived from the board type's review profile). */
   reviewCards: boolean;
+  /** Functional documentation cards (derived from the functional profile). */
+  documentation: boolean;
 }
 
 /**
@@ -173,6 +184,11 @@ export type OrganizeScreensSelectionContext = (
           };
           /** Whether the board was composed with flow arrows. */
           flow?: boolean;
+          /**
+           * Scoped-flow subset: ordered embedded source-frame ids the overlay
+           * connects, or null for a whole-board overlay. Absent on older boards.
+           */
+          flowFrameIds?: string[] | null;
           /** Review-surface settings (present on design-review boards). */
           review?: {
             enabled: boolean;
@@ -197,6 +213,18 @@ export type OrganizeScreensSelectionContext = (
    */
   flowEligible?: boolean;
   /**
+   * Selective-flow preview for edit mode: the number of Screen Cards the
+   * current selection would scope flow to on Apply (0 when the selection is
+   * not a 2+ subset). Lets the panel show "Flow: N selected screens".
+   */
+  flowScopeCount?: number;
+  /**
+   * True when an Apply with flow ON would scope the overlay to the selected
+   * subset (i.e. a proper subset of 2+ Screen Cards is selected). False means
+   * the whole board flows. Present only in edit mode.
+   */
+  flowWouldScope?: boolean;
+  /**
    * Capabilities for the currently resolved/edited board type. The UI gates the
    * annotations section (and future feature surfaces) on this. Optional so an
    * older engine pairing degrades gracefully (UI falls back to all-available).
@@ -215,6 +243,15 @@ export type OrganizeScreensSelectionContext = (
    * gracefully (the action stays hidden).
    */
   analyzeDesign?: AnalyzeDesignEligibility;
+  /**
+   * AI "Create Documentation" eligibility for the current selection. Present
+   * whenever a Functional Analysis Screen Card (card scope) or section
+   * (section scope) is selected. Reuses {@link AnalyzeDesignEligibility} (the
+   * shape already carries `target`, `cardId`, `screenCount`, `sectionName`);
+   * functional sets `boardType: "functional-analysis"`. Mutually exclusive
+   * with `analyzeDesign` by surface. Optional for back-compat.
+   */
+  createDocumentation?: AnalyzeDesignEligibility;
 };
 
 /**
@@ -280,6 +317,20 @@ export type UiToPluginMessage =
       // placeholder text. No network call. `target` is one card or the section.
       type: "reset-review";
       target: "card" | "section";
+    }
+  | {
+      // AI Create Documentation: export the target screen(s), send to the
+      // Bonzai vision backend with the functional-analysis prompt, and
+      // overwrite the Functional Card section fields. `target` selects a single
+      // card or every Functional Analysis screen in a section.
+      type: "create-documentation";
+      target: "card" | "section";
+    }
+  | {
+      // Offline reset: set the Functional Card section fields back to their
+      // default placeholder text. No network call. One card or the section.
+      type: "reset-documentation";
+      target: "card" | "section";
     };
 
 export type PluginToUiMessage =
@@ -316,7 +367,12 @@ export type PluginToUiMessage =
   | {
       type: "analyze-design-result";
       /** Which action produced this result, so the panel can label it. */
-      operation: "describe" | "review" | "resetReview";
+      operation:
+        | "describe"
+        | "review"
+        | "resetReview"
+        | "document"
+        | "resetDocumentation";
       /** Whether the action ran on one card or a whole section. */
       target?: "card" | "section";
       /** Human-readable labels of fields/screens written. */

@@ -5,7 +5,7 @@
 
 /* ORGANIZE_SCREENS_ENGINE:START */
 const OS_ENGINE_VERSION = 9;
-const OS_METADATA_NAMESPACE = "organize-screens";
+const OS_METADATA_NAMESPACE = "organizeScreens";
 const OS_METADATA_KEY = "metadata";
 // Tiny, always-writable positive marker for "this is a modern Board Types
 // board". The full envelope can exceed Figma's 100 kB per-entry shared-plugin-
@@ -55,6 +55,8 @@ const OS_BASE_TOKENS = {
   titleStyle: "Semi Bold",
   headerDescFontSize: 32,
   headerDescStyle: "Regular",
+  // Overview Header Section Description wraps at this width (not full-bleed).
+  sectionDescriptionMaxWidth: 1620,
   cardTitleFontSize: 42,
   cardTitleStyle: "Semi Bold",
   cardDescFontSize: 29,
@@ -157,9 +159,11 @@ const OS_TOKENS = OS_BASE_TOKENS;
 // Review Card structure (Design Review board type). sharedPluginData lets the
 // plugin (and future extraction tooling) find review fields deterministically
 // even after a reviewer renames or moves layers.
-const OS_REVIEW_NAMESPACE = "organize-screens";
+const OS_REVIEW_NAMESPACE = "organizeScreens";
 const OS_REVIEW_FIELD_KEY = "osReviewField"; // tag on each editable field text
 const OS_REVIEW_CARD_KEY = "osReviewCard"; // tag on the Review Card frame (= source frame id)
+const OS_FUNC_FIELD_KEY = "osFuncField"; // tag on each editable functional section text (= sectionKey)
+const OS_FUNC_CARD_KEY = "osFuncCard"; // tag on the Functional Card frame (= source frame id)
 const OS_ANNOTATION_FIELD_KEY = "osAnnotationField"; // tag on the Annotation Hint text (= source frame id)
 // Annotation slot heights are 240 (compact) / 400 (expanded); use the midpoint
 // to recover the mode from a live slot when its placeholder copy was edited.
@@ -244,6 +248,10 @@ const OS_REVIEW_SECTION_BY_KEY = (function () {
   }
   return map;
 })();
+
+function osIsReviewListFieldKey(fieldKey) {
+  return !!(fieldKey && OS_REVIEW_SECTION_BY_KEY[fieldKey]);
+}
 const OS_REVIEW_STATUS = { key: "status", default: "Draft" };
 // Review Status renders as an INSTANCE of a document-scoped COMPONENT_SET the
 // plugin creates the first time a Design Review board is composed in the file.
@@ -317,6 +325,88 @@ const OS_REVIEW_PLACEHOLDERS = (function () {
   return map;
 })();
 
+// Functional section registry (Functional Analysis board type). Sibling to
+// REVIEW_FRAMEWORKS: an ordered set of editable documentation `sections`, each
+// rendered as exactly one labelled, editable TEXT node (matching the Review
+// Card precedent — no nested per-subkey nodes). Nested AI output (inputs /
+// outputs, states) is flattened by the analysis mode into labelled multi-line
+// text inside the single field. Keyed by section `key` so the builder,
+// extraction, placeholders, and AI field map all stay in sync via one source.
+const FUNCTIONAL_SECTIONS = {
+  functional: {
+    id: "functional",
+    label: "Functional Analysis",
+    sections: [
+      { key: "purpose", label: "\uD83C\uDFAF Screen Purpose", placeholder: "Click to document what this screen is for..." },
+      { key: "userActions", label: "\uD83D\uDC46 User Actions", placeholder: "List the actions a user can take here..." },
+      { key: "systemBehavior", label: "\u2699 System Behavior", placeholder: "Describe how the system responds..." },
+      { key: "inputOutput", label: "\uD83D\uDD04 Inputs / Outputs", placeholder: "Inputs accepted / outputs produced..." },
+      { key: "states", label: "\uD83D\uDD01 States", placeholder: "Loading, empty, success, error, edge states..." },
+      { key: "businessRules", label: "\uD83D\uDCD0 Business Rules", placeholder: "Rules, constraints, validations..." },
+      { key: "missingFunctionality", label: "\uD83D\uDEA7 Missing Functionality", placeholder: "Gaps or unfinished behavior..." },
+      { key: "openQuestions", label: "\u2753 Open Questions", placeholder: "Assumptions and unresolved questions..." },
+    ],
+  },
+};
+
+function osResolveFunctionalFramework(id) {
+  if (id && FUNCTIONAL_SECTIONS[id]) return FUNCTIONAL_SECTIONS[id];
+  return FUNCTIONAL_SECTIONS.functional;
+}
+
+// Default ordered section defs + key list for the Functional Card.
+const OS_FUNCTIONAL_SECTIONS = FUNCTIONAL_SECTIONS.functional.sections;
+const OS_FUNCTIONAL_SECTION_KEYS = OS_FUNCTIONAL_SECTIONS.map(function (s) {
+  return s.key;
+});
+
+// Global catalog of every functional section def, keyed by section key, so the
+// Functional Card builder can resolve any configured section.
+const OS_FUNCTIONAL_SECTION_BY_KEY = (function () {
+  const map = {};
+  for (const fid in FUNCTIONAL_SECTIONS) {
+    if (!Object.prototype.hasOwnProperty.call(FUNCTIONAL_SECTIONS, fid)) continue;
+    const fw = FUNCTIONAL_SECTIONS[fid];
+    for (let i = 0; i < fw.sections.length; i++) {
+      map[fw.sections[i].key] = fw.sections[i];
+    }
+  }
+  return map;
+})();
+
+// Functional Card header (parallel to OS_REVIEW_HEADER). The confidence note is
+// rendered (muted) in the header when the AI returns one; not an editable field.
+const OS_FUNCTIONAL_HEADER = {
+  title: "Functional",
+  confidenceKey: "funcConfidence", // tag on the muted header confidence note
+};
+
+// Placeholder lookup by section key, so extraction can tell "still placeholder"
+// (empty) from real documentation text. Built from the registry automatically.
+const OS_FUNCTIONAL_PLACEHOLDERS = (function () {
+  const map = {};
+  for (const fid in FUNCTIONAL_SECTIONS) {
+    if (!Object.prototype.hasOwnProperty.call(FUNCTIONAL_SECTIONS, fid)) continue;
+    const fw = FUNCTIONAL_SECTIONS[fid];
+    for (let i = 0; i < fw.sections.length; i++) {
+      map[fw.sections[i].key] = fw.sections[i].placeholder;
+    }
+  }
+  return map;
+})();
+
+// Human-readable labels for applied/skipped reporting in the UI.
+const OS_FUNCTIONAL_FIELD_LABELS = (function () {
+  const map = {};
+  for (let i = 0; i < OS_FUNCTIONAL_SECTIONS.length; i++) {
+    // Strip the leading emoji + space for a clean report label.
+    const def = OS_FUNCTIONAL_SECTIONS[i];
+    const parts = def.label.split(" ");
+    map[def.key] = parts.length > 1 ? parts.slice(1).join(" ") : def.label;
+  }
+  return map;
+})();
+
 // Board Type registry. A Board Type is a deterministic behavior profile (not a
 // visual preset) plus an optional per-card review surface:
 //   - `custom`        — the identity baseline (token scales all 1, no emphasis
@@ -372,6 +462,44 @@ const BOARD_TYPES = {
       status: true,
       sections: ["workingWell", "questions", "concerns", "ideas"],
       notes: true,
+    },
+  },
+  "functional-analysis": {
+    id: "functional-analysis",
+    label: "Functional Analysis",
+    intent:
+      "Baseline token scales plus a full-width Functional Card stacked under each screen for structured functional documentation.",
+    // Reuses `custom`'s token scales, but uses its OWN column policy: a
+    // full-width documentation card stacked under each screen makes each card
+    // tall, so a 4-wide grid of tall cards scans poorly. Bias toward a readable
+    // 1-2 column document list. The orthogonal OS_ORIENTATIONS axis still layers
+    // on top, so a user can still pick Row/Grid/Column to override this default.
+    tokenScale: { outerSpacing: 1, innerSpacing: 1, typography: 1 },
+    behavior: {
+      wideScreenWidth: 1200,
+      mediumScreenWidth: 900,
+      maxColumns: 2,
+      maxPerStrip: 2,
+      preferredStrategy: "grid",
+      grouping: "none",
+      emphasis: "none",
+      cardWidthPolicy: "hug",
+      annotationPolicy: "none",
+    },
+    sectionGrid: { gap: 1500, maxColumns: 2 },
+    reviewCard: null,
+    functionalCard: {
+      enabled: true,
+      sections: [
+        "purpose",
+        "userActions",
+        "systemBehavior",
+        "inputOutput",
+        "states",
+        "businessRules",
+        "missingFunctionality",
+        "openQuestions",
+      ],
     },
   },
 };
@@ -468,6 +596,7 @@ function osResolvePersonality(id) {
 const OS_BOARD_TYPE_CAPABILITIES = {
   custom: { annotations: true, flow: true },
   "design-review": { annotations: false, flow: true },
+  "functional-analysis": { annotations: false, flow: true },
   // future: handoff { annotations: true, flow: true }
 };
 
@@ -481,6 +610,7 @@ function osBoardTypeCapabilities(id) {
     annotations: decl.annotations === true,
     flow: decl.flow === true,
     reviewCards: !!(profile.reviewCard && profile.reviewCard.enabled),
+    documentation: !!(profile.functionalCard && profile.functionalCard.enabled),
   };
 }
 
@@ -525,6 +655,7 @@ function osResolveTokens(base, profile, orientation) {
     titleStyle: base.titleStyle,
     headerDescFontSize: osRound(base.headerDescFontSize * typ),
     headerDescStyle: base.headerDescStyle,
+    sectionDescriptionMaxWidth: base.sectionDescriptionMaxWidth,
     cardTitleFontSize: osRound(base.cardTitleFontSize * typ),
     cardTitleStyle: base.cardTitleStyle,
     cardDescFontSize: osRound(base.cardDescFontSize * typ),
@@ -788,6 +919,34 @@ function osMakeTextFill(node) {
   if ("layoutSizingHorizontal" in node) {
     try { node.layoutSizingHorizontal = "FILL"; } catch (e) {}
   }
+}
+
+// Set a text node to hug its content on a single line (grows horizontally with
+// the text). Use for short inline labels such as the Functional Header
+// confidence note: a FILL + HEIGHT-autoresize node that starts empty resolves
+// to ~0 width, so when text is written later it wraps one character per line
+// (and balloons the header height). WIDTH auto-resize keeps it a single line.
+function osMakeTextHug(node) {
+  try { node.textAutoResize = "WIDTH"; } catch (e) {}
+  if ("layoutSizingHorizontal" in node) {
+    try { node.layoutSizingHorizontal = "HUG"; } catch (e) {}
+  }
+}
+
+// Section Description wraps at a fixed max width instead of filling the full
+// Overview Header. HEIGHT auto-resize reflows when copy changes.
+function osApplySectionDescriptionWidth(node, maxWidth) {
+  if (!node || node.type !== "TEXT") return;
+  const w =
+    typeof maxWidth === "number" && maxWidth > 0 ? maxWidth : 1620;
+  try { node.textAutoResize = "HEIGHT"; } catch (e) {}
+  if ("layoutSizingHorizontal" in node) {
+    try { node.layoutSizingHorizontal = "FIXED"; } catch (e) {}
+  }
+  try {
+    const h = typeof node.height === "number" && node.height > 0 ? node.height : 1;
+    node.resize(w, h);
+  } catch (e) {}
 }
 
 function osGetBounds(nodes) {
@@ -1901,6 +2060,13 @@ async function osBuildReviewSection(
   field.name = "Review Field Text";
   box.appendChild(field);
   osMakeTextFill(field);
+  // Review framework sections are list-first fields, including their muted
+  // placeholders, so a reviewer can click and keep typing in a native list.
+  if (osIsReviewListFieldKey(fieldKey)) {
+    osApplyReviewFieldListFormatting(field, true);
+  } else {
+    osClearTextListOptions(field);
+  }
   return section;
 }
 
@@ -2394,6 +2560,206 @@ async function osBuildReviewCard(parent, frame, tokens, reviewCfg, framework, ov
   return review;
 }
 
+// ---------------------------------------------------------------------------
+// Functional Card (Functional Analysis board type).
+//
+// A structured, editable documentation surface stacked full-width BELOW each
+// Screen Card's screen + description. Every section is exactly one native TEXT
+// node tagged via sharedPluginData (OS_FUNC_FIELD_KEY = sectionKey) so the
+// plugin can locate it deterministically. Empty fields render their muted
+// placeholder; a reviewer just clicks and types, or runs Create Documentation.
+// Mirrors the Review Card builders so the design-review path is untouched.
+// ---------------------------------------------------------------------------
+
+async function osCreateFuncFieldNode(value, fontSize, style, color, fieldKey) {
+  const t = await osCreateText(value, fontSize, style, color);
+  try {
+    t.setSharedPluginData(OS_REVIEW_NAMESPACE, OS_FUNC_FIELD_KEY, fieldKey);
+  } catch (e) {}
+  return t;
+}
+
+// One labelled, boxed functional section (label + an input-like field box).
+// Reuses the Review Card's field tokens for visual consistency.
+async function osBuildFuncSection(
+  parent,
+  labelText,
+  fieldKey,
+  override,
+  placeholder,
+  tokens,
+  minHeight
+) {
+  const section = figma.createFrame();
+  section.name = "Functional Section / " + fieldKey;
+  parent.appendChild(section);
+  section.layoutMode = "VERTICAL";
+  section.primaryAxisSizingMode = "AUTO";
+  section.counterAxisSizingMode = "AUTO";
+  section.itemSpacing = tokens.reviewLabelFieldGap;
+  section.fills = [];
+  try { section.layoutSizingHorizontal = "FILL"; } catch (e) {}
+
+  const label = await osCreateText(
+    labelText,
+    tokens.reviewLabelFontSize,
+    tokens.reviewLabelStyle,
+    tokens.reviewLabelColor
+  );
+  label.name = "Functional Label";
+  section.appendChild(label);
+  osMakeTextFill(label);
+
+  const box = figma.createFrame();
+  box.name = "Functional Field";
+  section.appendChild(box);
+  box.layoutMode = "VERTICAL";
+  box.primaryAxisSizingMode = "AUTO";
+  box.counterAxisSizingMode = "AUTO";
+  box.paddingTop = tokens.reviewFieldPaddingY;
+  box.paddingBottom = tokens.reviewFieldPaddingY;
+  box.paddingLeft = tokens.reviewFieldPaddingX;
+  box.paddingRight = tokens.reviewFieldPaddingX;
+  box.fills = [{ type: "SOLID", color: tokens.reviewFieldBgColor }];
+  box.strokes = [{ type: "SOLID", color: tokens.reviewFieldStroke }];
+  box.strokeWeight = 1;
+  box.cornerRadius = tokens.reviewFieldCornerRadius;
+  try { box.layoutSizingHorizontal = "FILL"; } catch (e) {}
+  if (typeof minHeight === "number" && minHeight > 0) {
+    try { box.minHeight = minHeight; } catch (e) {}
+  }
+
+  // Reuses the generic review field-text resolver (override/placeholder logic
+  // is identical): a stored value that differs from the placeholder reads as
+  // real (dark) text; otherwise the muted placeholder.
+  const resolved = osResolveReviewFieldText(override, fieldKey, placeholder);
+  const field = await osCreateFuncFieldNode(
+    resolved.text,
+    tokens.reviewFieldFontSize,
+    tokens.reviewFieldStyle,
+    resolved.isPlaceholder ? tokens.reviewPlaceholderColor : tokens.textColor,
+    fieldKey
+  );
+  field.name = "Functional Field Text";
+  box.appendChild(field);
+  osMakeTextFill(field);
+  return section;
+}
+
+// Build and append the Functional Card. `cfg` supplies the ordered section
+// keys; `override` carries preserved field text on recompose; an optional
+// `override.funcConfidence` renders a muted confidence note in the header.
+async function osBuildFunctionalCard(parent, frame, tokens, cfg, override, ctx) {
+  void ctx;
+  const sectionsKeys =
+    cfg && Array.isArray(cfg.sections) && cfg.sections.length
+      ? cfg.sections
+      : OS_FUNCTIONAL_SECTION_KEYS;
+
+  const fcard = figma.createFrame();
+  fcard.name = "Functional Card";
+  parent.appendChild(fcard);
+  fcard.layoutMode = "VERTICAL";
+  fcard.primaryAxisSizingMode = "AUTO";
+  fcard.counterAxisSizingMode = "AUTO";
+  fcard.itemSpacing = tokens.reviewSectionGap;
+  fcard.paddingTop = 0;
+  fcard.paddingBottom = 0;
+  fcard.paddingLeft = 0;
+  fcard.paddingRight = 0;
+  fcard.fills = [];
+  fcard.strokes = [];
+  fcard.cornerRadius = tokens.reviewCardCornerRadius;
+  try { fcard.layoutSizingHorizontal = "FILL"; } catch (e) {}
+  try {
+    fcard.setSharedPluginData(
+      OS_REVIEW_NAMESPACE,
+      OS_FUNC_CARD_KEY,
+      frame && frame.id ? frame.id : ""
+    );
+  } catch (e) {}
+
+  // ----- Pill header: title + optional confidence note -----
+  const header = figma.createFrame();
+  header.name = "Functional Header";
+  fcard.appendChild(header);
+  header.layoutMode = "HORIZONTAL";
+  header.primaryAxisSizingMode = "AUTO";
+  header.counterAxisSizingMode = "AUTO";
+  header.counterAxisAlignItems = "CENTER";
+  header.itemSpacing = tokens.reviewGap;
+  header.paddingTop = tokens.reviewHeaderPaddingY;
+  header.paddingBottom = tokens.reviewHeaderPaddingY;
+  header.paddingLeft = tokens.reviewHeaderPaddingX;
+  header.paddingRight = tokens.reviewHeaderPaddingX;
+  header.cornerRadius = tokens.reviewHeaderCornerRadius;
+  header.fills = [];
+  header.strokes = [{ type: "SOLID", color: tokens.reviewHeaderStroke }];
+  header.strokeWeight = 1;
+  try { header.layoutSizingHorizontal = "FILL"; } catch (e) {}
+
+  const title = await osCreateText(
+    OS_FUNCTIONAL_HEADER.title,
+    tokens.reviewTitleFontSize,
+    tokens.reviewTitleStyle,
+    tokens.reviewLabelColor
+  );
+  title.name = "Functional Title";
+  header.appendChild(title);
+  osMakeTextFill(title);
+
+  // Confidence note: a muted, tagged TEXT that Create Documentation overwrites
+  // with the model's confidence. Always present (empty by default) so the apply
+  // path can resolve it by tag without rebuilding the header.
+  const confidenceStored =
+    override && typeof override[OS_FUNCTIONAL_HEADER.confidenceKey] === "string"
+      ? override[OS_FUNCTIONAL_HEADER.confidenceKey]
+      : "";
+  const confidence = await osCreateFuncFieldNode(
+    confidenceStored,
+    tokens.reviewFieldFontSize,
+    tokens.reviewFieldStyle,
+    tokens.mutedTextColor,
+    OS_FUNCTIONAL_HEADER.confidenceKey
+  );
+  confidence.name = "Functional Confidence";
+  header.appendChild(confidence);
+  // Hug, not FILL: this note is empty at build time and a FILL + HEIGHT node
+  // collapses to ~0 width, wrapping the later "Confidence: …" text vertically.
+  osMakeTextHug(confidence);
+
+  // ----- Functional Content: per-section fields -----
+  const content = figma.createFrame();
+  content.name = "Functional Content";
+  fcard.appendChild(content);
+  content.layoutMode = "VERTICAL";
+  content.primaryAxisSizingMode = "AUTO";
+  content.counterAxisSizingMode = "AUTO";
+  content.itemSpacing = tokens.reviewSectionGap;
+  content.paddingTop = 0;
+  content.paddingBottom = 0;
+  content.paddingLeft = tokens.reviewContentPaddingX;
+  content.paddingRight = tokens.reviewContentPaddingX;
+  content.fills = [];
+  try { content.layoutSizingHorizontal = "FILL"; } catch (e) {}
+
+  for (let i = 0; i < sectionsKeys.length; i++) {
+    const def = OS_FUNCTIONAL_SECTION_BY_KEY[sectionsKeys[i]];
+    if (!def) continue;
+    await osBuildFuncSection(
+      content,
+      def.label,
+      def.key,
+      override,
+      def.placeholder,
+      tokens,
+      tokens.reviewFieldMinHeight
+    );
+  }
+
+  return fcard;
+}
+
 // Left column of a Design Review card: optional annotations, screen, description.
 async function osBuildCardScreenColumn(
   parent,
@@ -2616,6 +2982,28 @@ async function osBuildCard(parent, frame, tokens, plan, ctx, frameIndex, profile
         reviewBaseline = reviewOverride;
       }
     }
+
+    // Functional Analysis: stacked, full-width documentation card built below
+    // the screen + description. Enqueued here and drained in pipeline step 4b
+    // (osBuildSection_createFunctionalCards) so width/layout finalize with the
+    // rest of the board, mirroring how Review Cards are deferred.
+    if (
+      profile.functionalCard &&
+      profile.functionalCard.enabled &&
+      !ctx.suppressDocs
+    ) {
+      const funcOverride =
+        ctx.funcOverrides && frame && frame.id
+          ? ctx.funcOverrides[frame.id]
+          : null;
+      if (ctx.pendingDocs) {
+        ctx.pendingDocs.push({
+          funcCol: card,
+          frame: frame,
+          funcOverride: funcOverride,
+        });
+      }
+    }
   }
 
   ctx.cardIds.push(card.id);
@@ -2628,6 +3016,17 @@ async function osBuildCard(parent, frame, tokens, plan, ctx, frameIndex, profile
       description: descText,
     };
     if (reviewBaseline) baselineEntry.review = reviewBaseline;
+    // Persist the functional documentation baseline even when this board type
+    // does not render a Functional Card, so a Functional -> Custom -> Functional
+    // round trip keeps the generated/edited text (parallel to the annotation
+    // preservation just below).
+    const docOverrideForBaseline =
+      ctx.funcOverrides && frame && frame.id
+        ? ctx.funcOverrides[frame.id]
+        : null;
+    if (docOverrideForBaseline && typeof docOverrideForBaseline === "object") {
+      baselineEntry.doc = docOverrideForBaseline;
+    }
     // Persist the preserved note even when this board type does not render it,
     // so a Custom -> Design Review -> Custom round trip keeps text + placement.
     const annBaseline =
@@ -3201,10 +3600,12 @@ function osMakeBuildSectionCtx(opts) {
     variantGroups: opts.variantGroups || [],
     cardCopyOverrides: opts.cardCopyOverrides || null,
     reviewOverrides: opts.reviewOverrides || null,
+    funcOverrides: opts.funcOverrides || null,
     annotationOverrides: opts.annotationOverrides || null,
     decisionOverrides: opts.decisionOverrides || null,
     flow: opts.flow === true,
     flowLabels: opts.flowLabels || [],
+    flowFrameIds: Array.isArray(opts.flowFrameIds) ? opts.flowFrameIds : null,
     origin: opts.origin || null,
     section: opts.section || null,
     container: opts.container || null,
@@ -3286,7 +3687,7 @@ async function osBuildSection_prepareSectionShell(bsc) {
   );
   descNode.name = "Section Description";
   header.appendChild(descNode);
-  osMakeTextFill(descNode);
+  osApplySectionDescriptionWidth(descNode, tokens.sectionDescriptionMaxWidth);
 
   const gridFrame = figma.createFrame();
   gridFrame.name = "Screens Grid";
@@ -3327,6 +3728,7 @@ async function osBuildSection_createScreenCards(bsc) {
     heroCardId: null,
     copyOverrides: bsc.cardCopyOverrides,
     reviewOverrides: bsc.reviewOverrides,
+    funcOverrides: bsc.funcOverrides,
     annotationOverrides: bsc.annotationOverrides,
     decisionOverrides: bsc.decisionOverrides,
     copyBaselineCards: [],
@@ -3334,6 +3736,9 @@ async function osBuildSection_createScreenCards(bsc) {
     // Step 3 enqueues, step 4 drains: { reviewCol, frame, reviewOverride,
     // reviewFrameworkId } per Design Review Screen Card.
     pendingReviews: [],
+    // Step 3 enqueues, step 4b drains: { funcCol, frame, funcOverride } per
+    // Functional Analysis Screen Card.
+    pendingDocs: [],
     // Step 5 equalizes each variant strip's card widths.
     stripCardSets: [],
   };
@@ -3419,6 +3824,29 @@ async function osBuildSection_createReviewCards(bsc) {
   }
 }
 
+// Step 4b — Create Functional Cards. Drains the per-card functional queue
+// enqueued in step 3, building each Functional Analysis Functional Card
+// stacked full-width under the screen + description. No-op for non-functional
+// boards (empty queue).
+async function osBuildSection_createFunctionalCards(bsc) {
+  const ctx = bsc.ctx;
+  const pending = (ctx && ctx.pendingDocs) || [];
+  if (!pending.length) return;
+  const cfg = bsc.profile.functionalCard;
+  for (let i = 0; i < pending.length; i++) {
+    const entry = pending[i];
+    if (!entry || !entry.funcCol || entry.funcCol.removed) continue;
+    await osBuildFunctionalCard(
+      entry.funcCol,
+      entry.frame,
+      bsc.tokens,
+      cfg,
+      entry.funcOverride,
+      ctx
+    );
+  }
+}
+
 // Step 5 — Apply Auto Layout. Finalizes card widths once all content (screens
 // + reviews) exists: section-wide card width policy, per-strip equalization,
 // and Design Review screen/review column sizing.
@@ -3446,7 +3874,8 @@ async function osBuildSection_createFlowConnections(bsc) {
       bsc.container,
       bsc.ctx,
       bsc.tokens,
-      bsc.flowLabels || []
+      bsc.flowLabels || [],
+      bsc.flowFrameIds || null
     );
   }
 }
@@ -3464,6 +3893,7 @@ function osBuildSection_writeMetadata(bsc) {
     cards: bsc.ctx.copyBaselineCards,
     variantGroups: bsc.ctx.variantGroupResults,
     flow: bsc.flow,
+    flowFrameIds: bsc.flowFrameIds,
   });
 }
 
@@ -3507,6 +3937,7 @@ function osBuildSection_finalPositioning(bsc) {
 async function osRunBuildSectionPipeline(bsc) {
   await osBuildSection_createScreenCards(bsc);
   await osBuildSection_createReviewCards(bsc);
+  await osBuildSection_createFunctionalCards(bsc);
   osBuildSection_applyAutoLayout(bsc);
   await osBuildSection_createFlowConnections(bsc);
   return {
@@ -3523,10 +3954,27 @@ async function osRunBuildSectionPipeline(bsc) {
 // the board that holds one-directional arrows between consecutive cards in
 // reading order. Lives as a child of the Section Container so it moves and
 // recomposes with the board. Returns the number of arrows drawn.
-async function osBuildFlowOverlay(container, ctx, tokens, preservedLabels) {
-  const cards = (ctx.cardNodes || []).filter(function (n) {
+async function osBuildFlowOverlay(container, ctx, tokens, preservedLabels, scopeFrameIds) {
+  let cards = (ctx.cardNodes || []).filter(function (n) {
     return n && !n.removed;
   });
+  // Selective flow: when a scope of 2+ source-frame ids is present, connect
+  // only those cards, in the scope's order. Map each live card to its embedded
+  // source-frame id (the same stable key recompose uses). Fall back to the full
+  // sequence if fewer than 2 scoped cards survive.
+  if (Array.isArray(scopeFrameIds) && scopeFrameIds.length >= 2) {
+    const byFrameId = {};
+    for (let i = 0; i < cards.length; i++) {
+      const ef = osCardEmbeddedFrame(cards[i]);
+      if (ef && ef.id) byFrameId[ef.id] = cards[i];
+    }
+    const scoped = [];
+    for (let i = 0; i < scopeFrameIds.length; i++) {
+      const c = byFrameId[scopeFrameIds[i]];
+      if (c) scoped.push(c);
+    }
+    if (scoped.length >= 2) cards = scoped;
+  }
   if (cards.length < 2) return 0;
   const labels = Array.isArray(preservedLabels) ? preservedLabels : [];
 
@@ -3711,6 +4159,9 @@ function osNormalizeMetadata(env) {
   let boardType =
     s.boardType === "design-review" || s.personality === "design-review"
       ? "design-review"
+      : s.boardType === "functional-analysis" ||
+        s.personality === "functional-analysis"
+      ? "functional-analysis"
       : "custom";
   let review = osNormalizeReviewSettings(
     s.review,
@@ -3740,6 +4191,10 @@ function osNormalizeMetadata(env) {
           ann.position === "aboveScreen" ? "aboveScreen" : "belowDescription",
       },
       flow: s.flow === true,
+      flowFrameIds:
+        Array.isArray(s.flowFrameIds) && s.flowFrameIds.length
+          ? s.flowFrameIds.map(String)
+          : null,
       review: review,
     },
     layout: {
@@ -3789,6 +4244,19 @@ function osNormalizeMetadata(env) {
                             ? "expanded"
                             : "compact",
                       };
+                    }
+                    // Preserve the functional documentation baseline (string
+                    // values keyed by known section keys) even on non-functional
+                    // board types, so a Functional -> Custom -> Functional round
+                    // trip restores the generated/edited text (mirrors how the
+                    // annotation note is preserved above).
+                    if (c.doc && typeof c.doc === "object") {
+                      const doc = {};
+                      for (let di = 0; di < OS_FUNCTIONAL_SECTION_KEYS.length; di++) {
+                        const dk = OS_FUNCTIONAL_SECTION_KEYS[di];
+                        if (typeof c.doc[dk] === "string") doc[dk] = c.doc[dk];
+                      }
+                      if (Object.keys(doc).length) entry.doc = doc;
                     }
                     return entry;
                   })
@@ -3853,7 +4321,13 @@ function osReadBoardTypeMarker(container) {
       OS_METADATA_NAMESPACE,
       OS_BOARDTYPE_KEY
     );
-    if (raw === "custom" || raw === "design-review") return raw;
+    if (
+      raw === "custom" ||
+      raw === "design-review" ||
+      raw === "functional-analysis"
+    ) {
+      return raw;
+    }
     return null;
   } catch (e) {
     return null;
@@ -3893,6 +4367,13 @@ function osWriteBoardMetadata(container, info) {
             : "belowDescription",
       },
       flow: info.flow === true,
+      // Scoped-flow subset (ordered embedded source-frame ids), or null for a
+      // whole-board overlay. Lives in `settings` so it survives envelope
+      // trimming (which drops copyBaseline / variantGroups first).
+      flowFrameIds:
+        Array.isArray(info.flowFrameIds) && info.flowFrameIds.length
+          ? info.flowFrameIds.slice()
+          : null,
       review: profile.reviewCard
         ? {
             enabled: profile.reviewCard.enabled === true,
@@ -4134,6 +4615,15 @@ function osCardEmbeddedFrame(card) {
   for (let i = 0; i < card.children.length; i++) stack.push(card.children[i]);
   while (stack.length) {
     const n = stack.pop();
+    // The Functional Card is a direct sibling of the embedded screen with a
+    // non-wrapper name, so without this guard it is popped first and returned
+    // as the "embedded frame" — which made Create Documentation export the
+    // empty analysis scaffold instead of the screen. Skip it WITHOUT descending
+    // (its interior "Functional Section / …" frames are non-wrapper frames that
+    // would otherwise be mistaken for the screen). The Review Card is already an
+    // osIsCardLayoutWrapperName wrapper whose interior is all wrapper-named, so
+    // the existing descend handles it; this guard only adds the functional case.
+    if (n.type === "FRAME" && n.name === "Functional Card") continue;
     if ("children" in n) {
       for (let i = 0; i < n.children.length; i++) stack.push(n.children[i]);
     }
@@ -4164,7 +4654,13 @@ function osCardReviewCard(card) {
 // Review Card. Placeholder text is preserved verbatim and re-detected as empty
 // on rebuild, so this stays idempotent for untouched fields.
 function osExtractReviewFields(card) {
-  const rc = osCardReviewCard(card);
+  return osExtractReviewFieldsFromReviewCard(osCardReviewCard(card));
+}
+
+// Same extraction, but from an already-resolved Review Card node. The probe's
+// single-pass card index reuses this so it does not re-walk the card to find
+// the Review Card it already located.
+function osExtractReviewFieldsFromReviewCard(rc) {
   if (!rc) return null;
   const out = {};
   let found = false;
@@ -4192,6 +4688,142 @@ function osExtractReviewFields(card) {
     }
   }
   return found ? out : null;
+}
+
+// Find the Functional Card frame inside a Screen Card (functional-analysis
+// boards). Mirrors osCardReviewCard.
+function osCardFunctionalCard(card) {
+  if (!card || !("children" in card)) return null;
+  const stack = [];
+  for (let i = 0; i < card.children.length; i++) stack.push(card.children[i]);
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === "FRAME" && n.name === "Functional Card") return n;
+    if ("children" in n) {
+      for (let i = 0; i < n.children.length; i++) stack.push(n.children[i]);
+    }
+  }
+  return null;
+}
+
+// Read every tagged functional field's verbatim text into a { sectionKey: text }
+// map so recompose / board-type switches can replay documentation. Returns null
+// when the card has no Functional Card. Placeholder text is preserved verbatim
+// and re-detected as empty on rebuild, so this stays idempotent. Mirrors
+// osExtractReviewFields.
+function osExtractFuncFields(card) {
+  const fc = osCardFunctionalCard(card);
+  if (!fc) return null;
+  const out = {};
+  let found = false;
+  const stack = [fc];
+  while (stack.length) {
+    const node = stack.pop();
+    let key = "";
+    try {
+      key = node.getSharedPluginData(OS_REVIEW_NAMESPACE, OS_FUNC_FIELD_KEY);
+    } catch (e) {}
+    if (key && node.type === "TEXT") {
+      out[key] = typeof node.characters === "string" ? node.characters : "";
+      found = true;
+    }
+    if ("children" in node) {
+      for (let i = 0; i < node.children.length; i++) stack.push(node.children[i]);
+    }
+  }
+  return found ? out : null;
+}
+
+// Single bounded walk of one Screen Card that records the structural frames the
+// section resolvers need: the embedded screen frame, the Review Card, the
+// Functional Card, and the Card Title text. The key perf property is that it
+// treats the embedded user screen as a LEAF (records it, never descends), so a
+// card with a huge embedded design costs O(card layout) instead of O(embedded
+// design). Child push order mirrors osCardEmbeddedFrame/osCardReviewCard (push
+// 0..n, pop LIFO) so "first match" resolves to the same nodes those helpers
+// would return. Used only by the probe's read path; the apply path keeps
+// calling the standalone helpers.
+function osBuildProbeCardEntry(card) {
+  const entry = {
+    card: card,
+    embeddedFrame: null,
+    reviewCard: null,
+    functionalCard: null,
+    cardTitle: null,
+  };
+  if (!card || !("children" in card)) return entry;
+  const stack = [];
+  for (let i = 0; i < card.children.length; i++) stack.push(card.children[i]);
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === "TEXT") {
+      if (!entry.cardTitle && n.name === "Card Title") entry.cardTitle = n;
+      continue;
+    }
+    if (n.type === "FRAME") {
+      if (n.name === "Review Card") {
+        if (!entry.reviewCard) entry.reviewCard = n;
+        continue; // fields read separately from this node; do not descend
+      }
+      if (n.name === "Functional Card") {
+        if (!entry.functionalCard) entry.functionalCard = n;
+        continue;
+      }
+      if (!osIsCardLayoutWrapperName(n.name)) {
+        // First non-wrapper, non-card frame = embedded user screen. Record it
+        // once and STOP — never descend into the user's design subtree.
+        if (!entry.embeddedFrame) entry.embeddedFrame = n;
+        continue;
+      }
+      // Layout wrapper (Card Body / Screen Column / Review Column / ...): descend.
+    }
+    if ("children" in n) {
+      for (let i = 0; i < n.children.length; i++) stack.push(n.children[i]);
+    }
+  }
+  return entry;
+}
+
+// Display name from a prebuilt entry (mirrors osCardDisplayName). Card Title is
+// a direct child of the card, so the bounded walk always captures it.
+function osEntryDisplayName(entry) {
+  const t = entry && entry.cardTitle;
+  if (t && typeof t.characters === "string" && t.characters.trim()) {
+    return t.characters.trim();
+  }
+  const card = entry && entry.card;
+  if (card && typeof card.name === "string") {
+    return card.name.replace("Screen Card / ", "");
+  }
+  return "Screen";
+}
+
+// Build one shared index for every card on a board in a single bounded pass.
+// Reused by the section resolvers (via an optional arg) so a 10-card board is
+// walked once instead of ~4 unbounded subtree walks per card. Probe-only.
+function osBuildProbeCardIndex(container) {
+  const grid = osFindGrid(container);
+  const cards = osCollectCardsInGrid(grid || container);
+  const byId = {};
+  const entries = [];
+  let hasReviewSurface = false;
+  let hasFunctionalSurface = false;
+  for (let i = 0; i < cards.length; i++) {
+    const entry = osBuildProbeCardEntry(cards[i]);
+    entries.push(entry);
+    if (cards[i] && cards[i].id) byId[cards[i].id] = entry;
+    if (entry.reviewCard) hasReviewSurface = true;
+    if (entry.functionalCard) hasFunctionalSurface = true;
+  }
+  return {
+    container: container,
+    grid: grid,
+    cards: cards,
+    entries: entries,
+    byId: byId,
+    hasReviewSurface: hasReviewSurface,
+    hasFunctionalSurface: hasFunctionalSurface,
+  };
 }
 
 // Find a card's Annotation Slot. Custom cards keep it as a direct child;
@@ -4391,6 +5023,7 @@ function osExtractBoardState(section) {
       pros: copy.pros,
       cons: copy.cons,
       review: osExtractReviewFields(card),
+      doc: osExtractFuncFields(card),
     });
   }
 
@@ -4416,6 +5049,18 @@ function osExtractBoardState(section) {
 // Settings delta classification.
 // ---------------------------------------------------------------------------
 
+// Order-sensitive array equality for scoped-flow frame-id lists. A null/absent
+// list and an empty list both mean "whole board", so they compare equal.
+function osFlowFrameIdsEqual(a, b) {
+  const aa = Array.isArray(a) ? a : [];
+  const bb = Array.isArray(b) ? b : [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) {
+    if (aa[i] !== bb[i]) return false;
+  }
+  return true;
+}
+
 function osClassifySettingsDelta(prev, next) {
   if (!prev || !next) return "layout";
   const a = prev.settings || prev;
@@ -4425,6 +5070,9 @@ function osClassifySettingsDelta(prev, next) {
   }
   if (a.orientation !== b.orientation) return "layout";
   if ((a.flow === true) !== (b.flow === true)) return "layout";
+  // A change to the scoped-flow subset (or its order) requires rebuilding the
+  // overlay; an identical "keep" leaves it for the annotation/none paths.
+  if (!osFlowFrameIdsEqual(a.flowFrameIds, b.flowFrameIds)) return "layout";
   const aAnn = a.annotations || {};
   const bAnn = b.annotations || {};
   const annDelta =
@@ -4588,6 +5236,21 @@ async function osRecomposeBoard(section, params) {
     typeof params.flow === "boolean"
       ? params.flow
       : !!(prevMeta && prevMeta.settings && prevMeta.settings.flow);
+  // Selective flow scope: an explicit param wins (Apply path) — including an
+  // explicit null which clears the scope; otherwise reuse the board's stored
+  // scope. Filtered against surviving frames after teardown prep below.
+  const prevFlowScope =
+    prevMeta && prevMeta.settings && Array.isArray(prevMeta.settings.flowFrameIds)
+      ? prevMeta.settings.flowFrameIds
+      : null;
+  let flowFrameIds;
+  if (params.flowFrameIds === null) {
+    flowFrameIds = null;
+  } else if (Array.isArray(params.flowFrameIds)) {
+    flowFrameIds = params.flowFrameIds;
+  } else {
+    flowFrameIds = prevFlowScope;
+  }
   // Capture any user-edited flow labels before teardown so a recompose
   // replays them by index instead of resetting to the placeholder.
   const preservedFlowLabels = osCollectFlowLabels(container);
@@ -4600,10 +5263,18 @@ async function osRecomposeBoard(section, params) {
   // a Design Review board): live extraction returns null there, but the note
   // must survive the round trip, so we replay it from metadata.
   const prevAnnByFrameId = {};
+  // Stored functional documentation baseline keyed by frame id. Used as the
+  // fallback when the current board did not render a Functional Card (e.g. a
+  // Custom board): live extraction returns null there, but the doc text must
+  // survive the round trip, so we replay it from metadata (mirrors annotations).
+  const prevDocByFrameId = {};
   if (prevMeta && prevMeta.copyBaseline && Array.isArray(prevMeta.copyBaseline.cards)) {
     for (const c of prevMeta.copyBaseline.cards) {
       if (c && c.frameId && c.annotation && typeof c.annotation === "object") {
         prevAnnByFrameId[c.frameId] = c.annotation;
+      }
+      if (c && c.frameId && c.doc && typeof c.doc === "object") {
+        prevDocByFrameId[c.frameId] = c.doc;
       }
     }
   }
@@ -4611,6 +5282,7 @@ async function osRecomposeBoard(section, params) {
   const frames = [];
   const liveCopyByFrameId = {};
   const liveReviewByFrameId = {};
+  const liveDocByFrameId = {};
   const liveAnnotationByFrameId = {};
   for (const entry of state.cards) {
     if (entry.frame && !entry.frame.removed) {
@@ -4630,6 +5302,15 @@ async function osRecomposeBoard(section, params) {
       const preservedAnn = liveAnn || prevAnnByFrameId[entry.frame.id] || null;
       if (preservedAnn) {
         liveAnnotationByFrameId[entry.frame.id] = preservedAnn;
+      }
+      // Prefer the live functional doc (current board rendered a Functional
+      // Card); else fall back to the stored baseline so an incapable board type
+      // preserves the documentation text across the round trip.
+      const liveDoc =
+        entry.doc && typeof entry.doc === "object" ? entry.doc : null;
+      const preservedDoc = liveDoc || prevDocByFrameId[entry.frame.id] || null;
+      if (preservedDoc) {
+        liveDocByFrameId[entry.frame.id] = preservedDoc;
       }
       if (entry.review && typeof entry.review === "object") {
         liveReviewByFrameId[entry.frame.id] = entry.review;
@@ -4672,6 +5353,24 @@ async function osRecomposeBoard(section, params) {
   if (!liveFrames.length) {
     throw new Error("All screen frames were removed before recompose could run.");
   }
+
+  // Drop scoped flow ids whose frame the user removed; fall back to whole-board
+  // when fewer than 2 survive (a 0/1-card flow is meaningless). When the scope
+  // set changes, reset preserved labels to placeholder so a label never
+  // reattaches to a different transition than the user intended.
+  if (Array.isArray(flowFrameIds) && flowFrameIds.length) {
+    const liveSet = {};
+    for (let i = 0; i < liveFrames.length; i++) liveSet[liveFrames[i].id] = true;
+    const survivors = [];
+    for (let i = 0; i < flowFrameIds.length; i++) {
+      if (liveSet[flowFrameIds[i]]) survivors.push(flowFrameIds[i]);
+    }
+    flowFrameIds = survivors.length >= 2 ? survivors : null;
+  } else {
+    flowFrameIds = null;
+  }
+  const flowScopeChanged = !osFlowFrameIdsEqual(flowFrameIds, prevFlowScope);
+  const flowLabelsForBuild = flowScopeChanged ? [] : preservedFlowLabels;
 
   // Replay stored variant groups: map each group's sourceFrameIds onto live
   // frames (dropping any removed). A group with fewer than 2 survivors
@@ -4761,10 +5460,12 @@ async function osRecomposeBoard(section, params) {
     sectionDescription: resolvedDescription,
     cardCopyOverrides: liveCopyByFrameId,
     reviewOverrides: liveReviewByFrameId,
+    funcOverrides: liveDocByFrameId,
     annotationOverrides: liveAnnotationByFrameId,
     decisionOverrides: state.decisions || null,
     flow: flowEnabled,
-    flowLabels: preservedFlowLabels,
+    flowLabels: flowLabelsForBuild,
+    flowFrameIds: flowFrameIds,
     section: section,
     container: container,
   });
@@ -4870,6 +5571,24 @@ async function osApplyBoardEdit(sectionId, params) {
       ? params.flow
       : !!(prev && prev.settings && prev.settings.flow);
 
+  // Selective flow scope: derive from the live selection at apply time. Only an
+  // explicit gesture changes the durable scope (a 2+ subset sets it; selecting
+  // all cards clears it; anything else keeps the stored value). Resolve before
+  // teardown so the selection still points at the live cards. Flow OFF drops
+  // any scope so re-enabling starts from a clean whole-board overlay.
+  const prevFlowFrameIds =
+    prev && prev.settings && Array.isArray(prev.settings.flowFrameIds)
+      ? prev.settings.flowFrameIds
+      : null;
+  let nextFlowFrameIds = prevFlowFrameIds;
+  if (nextFlow) {
+    const scope = osResolveSelectedFlowScope(container);
+    if (scope.action === "set") nextFlowFrameIds = scope.ids;
+    else if (scope.action === "clear") nextFlowFrameIds = null;
+  } else {
+    nextFlowFrameIds = null;
+  }
+
   const nextSettings = {
     boardType: nextProfile.id,
     orientation: nextOrientation.id,
@@ -4884,6 +5603,7 @@ async function osApplyBoardEdit(sectionId, params) {
       position: nextAnnotations.position,
     },
     flow: nextFlow,
+    flowFrameIds: nextFlowFrameIds,
   };
   const delta = osClassifySettingsDelta(prev, { settings: nextSettings });
 
@@ -4954,8 +5674,9 @@ async function osApplyBoardEdit(sectionId, params) {
       sectionDescription: state.sectionDescription,
       cards: cards,
       // Flow is unchanged on an annotations-only patch; preserve the stored
-      // value so the metadata stays accurate.
+      // value (and its scope) so the metadata stays accurate.
       flow: nextFlow,
+      flowFrameIds: nextFlowFrameIds,
       // Preserve stored grouping — an annotations-only patch must not wipe
       // it, or a later layout recompose would lose the comparison strips.
       variantGroups: prev && Array.isArray(prev.variantGroups)
@@ -4987,6 +5708,7 @@ async function osApplyBoardEdit(sectionId, params) {
     sectionTitle: params.sectionTitle,
     sectionDescription: params.sectionDescription,
     flow: nextFlow,
+    flowFrameIds: nextFlowFrameIds,
   };
   const result = await osRecomposeBoard(node, recomposeParams);
   result.delta = "layout";
@@ -5114,6 +5836,53 @@ async function osResetBoardToScreens(sectionId) {
 // Selection-context probe (for the plugin UI).
 // ---------------------------------------------------------------------------
 
+// Resolve how the live selection should affect a board's scoped flow on Apply.
+// Durable scope only changes on an explicit gesture; otherwise it is kept:
+//   { action: "set", ids } -> a proper subset of 2..n-1 Screen Cards is
+//                             selected; flow connects only these, in selection
+//                             order (keyed by embedded source-frame id).
+//   { action: "clear" }    -> all n Screen Cards selected (explicit "back to
+//                             whole board" gesture).
+//   { action: "keep" }     -> anything else (0/1 card, the section, the
+//                             header, non-card nodes); leave stored scope
+//                             untouched so incidental edits never rescope.
+// `container` is the board's Section Container. ES2019-safe (no ?./??).
+function osResolveSelectedFlowScope(container) {
+  if (!container) return { action: "keep" };
+  const sel = (figma.currentPage && figma.currentPage.selection) || [];
+  const grid = osFindGrid(container) || container;
+  const allCards = osCollectCardsInGrid(grid);
+  const total = allCards.length;
+  if (total < 2) return { action: "keep" };
+
+  // Map each board card to its embedded source-frame id (the same stable key
+  // recompose and copy preservation use).
+  const cardIdToFrameId = {};
+  for (let i = 0; i < allCards.length; i++) {
+    const ef = osCardEmbeddedFrame(allCards[i]);
+    if (ef && ef.id) cardIdToFrameId[allCards[i].id] = ef.id;
+  }
+
+  // Walk each selected node up to its owning Screen Card, dedup the resulting
+  // frame ids in selection order, keep only cards that belong to this board.
+  const orderedFrameIds = [];
+  const seen = {};
+  for (let s = 0; s < sel.length; s++) {
+    const card = osFindScreenCard(sel[s]);
+    if (!card) continue;
+    const fid = cardIdToFrameId[card.id];
+    if (!fid) continue;
+    if (seen[fid]) continue;
+    seen[fid] = true;
+    orderedFrameIds.push(fid);
+  }
+
+  const count = orderedFrameIds.length;
+  if (count >= total) return { action: "clear" };
+  if (count >= 2) return { action: "set", ids: orderedFrameIds };
+  return { action: "keep" };
+}
+
 // True when the current selection can drive an in-place flow: 2+ FRAMEs, or
 // any selected SECTION holding 2+ direct child FRAMEs.
 function osComputeFlowEligible(sel) {
@@ -5192,7 +5961,12 @@ function osFindDescendantTextByName(root, name) {
 // Classify a card's review framework from its tagged fields: "comparative"
 // (pros/cons/...) or "standard" (workingWell/...). null when no review fields.
 function osCardReviewFrameworkId(card) {
-  const fields = osExtractReviewFields(card);
+  return osClassifyReviewFramework(osExtractReviewFields(card));
+}
+
+// Pure classification of a review-fields map. Split out so the probe's card
+// index can classify from fields it already extracted, without re-walking.
+function osClassifyReviewFramework(fields) {
   if (!fields) return null;
   const comparative = ["pros", "cons", "openQuestions", "improvementIdeas"];
   for (let i = 0; i < comparative.length; i++) {
@@ -5324,7 +6098,12 @@ function osResolveAnalyzeDesignTarget() {
 // selected board. Used when the selection is the section / container / header
 // or multiple cards (card scope takes priority for a single card). The runtime
 // re-resolves each frame by id at run time; the probe only needs the count.
-function osResolveAnalyzeDesignSectionTarget() {
+//
+// Optional `index` (probe-only fast path): a prebuilt osBuildProbeCardIndex for
+// this board's container. When supplied, per-card lookups read from it instead
+// of re-walking each card's subtree. The apply path calls this with no arg and
+// behaves exactly as before.
+function osResolveAnalyzeDesignSectionTarget(index) {
   if (figma.editorType && figma.editorType !== "figma") {
     return { eligible: false, reason: "Analyze Design runs in the Figma editor only." };
   }
@@ -5341,26 +6120,35 @@ function osResolveAnalyzeDesignSectionTarget() {
   }
   const root = boards[0];
   const container = root.container || osFindContainerInSection(root.section);
-  if (!osBoardHasDesignReviewSurface(container)) {
+  const useIndex = index && index.container === container;
+  const hasSurface = useIndex
+    ? index.hasReviewSurface
+    : osBoardHasDesignReviewSurface(container);
+  if (!hasSurface) {
     return {
       eligible: false,
       reason: "Section analysis needs a Design Review board. Switch the board to Design Review first.",
     };
   }
 
-  const grid = osFindGrid(container);
-  const cards = osCollectCardsInGrid(grid || container);
+  const grid = useIndex ? index.grid : osFindGrid(container);
+  const cards = useIndex ? index.cards : osCollectCardsInGrid(grid || container);
   const screens = [];
   for (let i = 0; i < cards.length; i++) {
     const card = cards[i];
-    const frame = osCardEmbeddedFrame(card);
+    const entry = useIndex ? index.byId[card.id] : null;
+    const frame = entry ? entry.embeddedFrame : osCardEmbeddedFrame(card);
     if (!frame) continue;
-    if (!osCardReviewCard(card)) continue;
-    if (osCardReviewFrameworkId(card) === "comparative") continue;
+    const reviewCard = entry ? entry.reviewCard : osCardReviewCard(card);
+    if (!reviewCard) continue;
+    const frameworkId = entry
+      ? osClassifyReviewFramework(osExtractReviewFieldsFromReviewCard(entry.reviewCard))
+      : osCardReviewFrameworkId(card);
+    if (frameworkId === "comparative") continue;
     screens.push({
       cardId: card.id,
       frameId: frame.id,
-      cardName: osCardDisplayName(card),
+      cardName: entry ? osEntryDisplayName(entry) : osCardDisplayName(card),
       frameName: frame.name || "",
       frameworkId: "standard",
     });
@@ -5405,7 +6193,8 @@ async function osSetTextNodeCharacters(node, text, color) {
   }
 }
 
-// Join a bullet array into a single text block.
+// Join a bullet array into a single text block (legacy `•` prefix join). Used by
+// Functional Analysis apply; Design Review uses native UNORDERED lists instead.
 function osJoinAnalysisBullets(items) {
   const lines = [];
   for (let i = 0; i < items.length; i++) {
@@ -5413,6 +6202,66 @@ function osJoinAnalysisBullets(items) {
     if (s) lines.push("\u2022 " + s);
   }
   return lines.join("\n");
+}
+
+// Trim and drop empty strings from a model list field.
+function osNormalizeAnalysisLines(items) {
+  const lines = [];
+  if (!Array.isArray(items)) return lines;
+  for (let i = 0; i < items.length; i++) {
+    const s = typeof items[i] === "string" ? items[i].trim() : "";
+    if (s) lines.push(s);
+  }
+  return lines;
+}
+
+function osClearTextListOptions(node) {
+  if (!node || node.type !== "TEXT" || typeof node.setRangeListOptions !== "function") {
+    return;
+  }
+  try {
+    const len = typeof node.characters === "string" ? node.characters.length : 0;
+    if (len > 0) node.setRangeListOptions(0, len, { type: "NONE" });
+  } catch (e) {}
+}
+
+// Apply native UNORDERED list formatting to an already-populated review field
+// TEXT node when forced or when its live text holds 2+ non-empty lines; clear to
+// plain text otherwise. Single source of truth shared by the AI apply path AND
+// the build/recompose path. Requires the node's font to be loaded (callers set
+// characters with a loaded font first).
+function osApplyReviewFieldListFormatting(node, forceUnordered) {
+  if (!node || node.type !== "TEXT") return;
+  if (typeof node.setRangeListOptions !== "function") return;
+  const chars = typeof node.characters === "string" ? node.characters : "";
+  if (!chars.length) {
+    osClearTextListOptions(node);
+    return;
+  }
+  let nonEmpty = 0;
+  const parts = chars.split(/\r?\n/);
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].trim().length > 0) nonEmpty += 1;
+  }
+  if (!forceUnordered && nonEmpty < 2) {
+    osClearTextListOptions(node);
+    return;
+  }
+  try {
+    node.setRangeListOptions(0, chars.length, { type: "UNORDERED" });
+  } catch (e) {}
+}
+
+// Write a multi-line review field as a native Figma UNORDERED list (2+ items) or
+// plain text (single item). Copy is unchanged — only list formatting differs.
+async function osSetTextNodeUnorderedList(node, items, color) {
+  const lines = osNormalizeAnalysisLines(items);
+  if (!lines.length) return false;
+  const text = lines.join("\n");
+  const ok = await osSetTextNodeCharacters(node, text, color);
+  if (!ok) return false;
+  osApplyReviewFieldListFormatting(node);
+  return true;
 }
 
 // Index every tagged review field TEXT node inside a Review Card by its key.
@@ -5530,14 +6379,13 @@ async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, scope) {
     for (let i = 0; i < OS_ANALYZE_LIST_FIELDS.length; i++) {
       const key = OS_ANALYZE_LIST_FIELDS[i];
       const list = Array.isArray(analysis[key]) ? analysis[key] : [];
-      const text = osJoinAnalysisBullets(list);
-      if (!text) continue;
+      if (!osNormalizeAnalysisLines(list).length) continue;
       const node = osResolveReviewFieldNode(reviewCard, fieldNodes, key);
       if (!node) {
         skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
         continue;
       }
-      const ok = await osSetTextNodeCharacters(node, text, tokens.textColor);
+      const ok = await osSetTextNodeUnorderedList(node, list, tokens.textColor);
       if (ok) applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
       else skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
     }
@@ -5548,8 +6396,10 @@ async function osApplyDesignReviewAnalysis(sectionId, cardId, analysis, scope) {
       const notesNode = osResolveReviewFieldNode(reviewCard, fieldNodes, "notes");
       if (notesNode) {
         const ok = await osSetTextNodeCharacters(notesNode, notesText, tokens.textColor);
-        if (ok) applied.push(OS_ANALYZE_FIELD_LABELS.notes);
-        else skipped.push(OS_ANALYZE_FIELD_LABELS.notes);
+        if (ok) {
+          osClearTextListOptions(notesNode);
+          applied.push(OS_ANALYZE_FIELD_LABELS.notes);
+        } else skipped.push(OS_ANALYZE_FIELD_LABELS.notes);
       }
     }
   }
@@ -5602,8 +6452,10 @@ async function osResetDesignReviewFields(sectionId, cardId) {
       placeholder,
       tokens.reviewPlaceholderColor
     );
-    if (ok) applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
-    else skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+    if (ok) {
+      osClearTextListOptions(node);
+      applied.push(OS_ANALYZE_FIELD_LABELS[key] || key);
+    } else skipped.push(OS_ANALYZE_FIELD_LABELS[key] || key);
   }
 
   return {
@@ -5614,6 +6466,424 @@ async function osResetDesignReviewFields(sectionId, cardId) {
     applied: applied,
     skipped: skipped,
     engineVersion: OS_ENGINE_VERSION,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Functional Analysis: Create Documentation apply/reset/resolve (mirror of the
+// design-review analyze path, gated on the Functional Card surface).
+// ---------------------------------------------------------------------------
+
+// True when a functional field's verbatim text is real (non-empty, not the
+// registry placeholder for that key). Mirrors osReviewFieldIsRealText.
+function osFuncFieldIsRealText(text, fieldKey) {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed.length) return false;
+  const placeholder = OS_FUNCTIONAL_PLACEHOLDERS[fieldKey];
+  return trimmed !== (placeholder || "");
+}
+
+// Does this card already have real functional documentation text?
+function osFuncExistingContent(card) {
+  let hasContent = false;
+  const fields = osExtractFuncFields(card);
+  if (fields) {
+    for (const key in fields) {
+      if (!Object.prototype.hasOwnProperty.call(fields, key)) continue;
+      if (osFuncFieldIsRealText(fields[key], key)) {
+        hasContent = true;
+        break;
+      }
+    }
+  }
+  return { hasContent: hasContent };
+}
+
+// Index every tagged functional field TEXT node by its key. Mirrors
+// osIndexReviewFieldNodes.
+function osIndexFuncFieldNodes(funcCard) {
+  const map = {};
+  if (!funcCard) return map;
+  const stack = [funcCard];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.type === "TEXT") {
+      let key = "";
+      try {
+        key = node.getSharedPluginData(OS_REVIEW_NAMESPACE, OS_FUNC_FIELD_KEY);
+      } catch (e) {}
+      if (key && !map[key]) map[key] = node;
+    }
+    if ("children" in node) {
+      for (let i = 0; i < node.children.length; i++) stack.push(node.children[i]);
+    }
+  }
+  return map;
+}
+
+// Structural fallback: find the "Functional Field Text" node for a key via its
+// "Functional Section / <key>" frame, independent of plugin-data tags.
+function osFindFuncFieldNodeByName(funcCard, fieldKey) {
+  if (!funcCard || !("children" in funcCard)) return null;
+  const sectionName = "Functional Section / " + fieldKey;
+  const stack = [funcCard];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.type === "FRAME" && node.name === sectionName) {
+      return osFindDescendantTextByName(node, "Functional Field Text");
+    }
+    if ("children" in node) {
+      for (let i = 0; i < node.children.length; i++) stack.push(node.children[i]);
+    }
+  }
+  return null;
+}
+
+// Resolve a functional field's editable TEXT node: prefer the tag index, then
+// fall back to the structural lookup. Mirrors osResolveReviewFieldNode.
+function osResolveFuncFieldNode(funcCard, fieldNodes, fieldKey) {
+  if (fieldNodes && fieldNodes[fieldKey]) return fieldNodes[fieldKey];
+  return osFindFuncFieldNodeByName(funcCard, fieldKey);
+}
+
+// True when a board still has at least one Functional Card on canvas (the
+// authoritative signal when metadata/marker are stale). Mirrors
+// osBoardHasDesignReviewSurface.
+function osBoardHasFunctionalSurface(container) {
+  if (!container) return false;
+  const grid = osFindGrid(container);
+  const scope = grid || container;
+  const cards = osCollectCardsInGrid(scope);
+  // Bounded per-card scan: osBuildProbeCardEntry treats the embedded user
+  // screen as a leaf, so this never descends into a card's design subtree.
+  // A Functional Card only ever lives in the card layout, so pruning the
+  // embedded screen is safe and turns ~200ms/card inference into ~0. This is
+  // the only structural signal when the boardType marker is missing.
+  for (let i = 0; i < cards.length; i++) {
+    if (osBuildProbeCardEntry(cards[i]).functionalCard) return true;
+  }
+  return false;
+}
+
+// Resolve the Create Documentation card target for the current selection.
+// Mirrors osResolveAnalyzeDesignTarget, gated on the Functional Card surface.
+function osResolveCreateDocumentationTarget() {
+  if (figma.editorType && figma.editorType !== "figma") {
+    return { eligible: false, reason: "Create Documentation runs in the Figma editor only." };
+  }
+  const sel = (figma.currentPage && figma.currentPage.selection) || [];
+  if (!sel.length) {
+    return { eligible: false, reason: "Select a screen card on a Functional Analysis board." };
+  }
+  const boards = osResolveSelectedBoards(sel);
+  if (boards.length !== 1) {
+    return {
+      eligible: false,
+      reason: "Select a single screen card on one Functional Analysis board.",
+    };
+  }
+  const root = boards[0];
+
+  let card = null;
+  for (let i = 0; i < sel.length; i++) {
+    const found = osFindScreenCard(sel[i]);
+    if (found) {
+      card = found;
+      break;
+    }
+  }
+  if (!card) {
+    return {
+      eligible: false,
+      reason: "Select one screen card (not the whole board) to document.",
+    };
+  }
+
+  const frame = osCardEmbeddedFrame(card);
+  if (!frame) {
+    return { eligible: false, reason: "This card has no embedded screen to document." };
+  }
+  if (!osCardFunctionalCard(card)) {
+    return {
+      eligible: false,
+      reason: "Create Documentation needs a Functional Analysis card. Switch the board to Functional Analysis first.",
+    };
+  }
+
+  const content = osFuncExistingContent(card);
+  return {
+    eligible: true,
+    sectionId: root.section.id,
+    cardId: card.id,
+    frameId: frame.id,
+    cardName: osCardDisplayName(card),
+    frameName: frame.name || "",
+    boardType: "functional-analysis",
+    hasExistingContent: content.hasContent,
+  };
+}
+
+// Section-scope documentation target: every Functional Analysis screen in one
+// selected board. Mirrors osResolveAnalyzeDesignSectionTarget.
+// Optional `index` (probe-only fast path) mirrors
+// osResolveAnalyzeDesignSectionTarget: a prebuilt osBuildProbeCardIndex avoids
+// re-walking each card. The apply path calls this with no arg (unchanged).
+function osResolveCreateDocumentationSectionTarget(index) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    return { eligible: false, reason: "Create Documentation runs in the Figma editor only." };
+  }
+  const sel = (figma.currentPage && figma.currentPage.selection) || [];
+  if (!sel.length) {
+    return { eligible: false, reason: "Select a Functional Analysis section to document its screens." };
+  }
+  const boards = osResolveSelectedBoards(sel);
+  if (boards.length !== 1) {
+    return { eligible: false, reason: "Select a single Functional Analysis section." };
+  }
+  const root = boards[0];
+  const container = root.container || osFindContainerInSection(root.section);
+  const useIndex = index && index.container === container;
+  const hasSurface = useIndex
+    ? index.hasFunctionalSurface
+    : osBoardHasFunctionalSurface(container);
+  if (!hasSurface) {
+    return {
+      eligible: false,
+      reason: "Section documentation needs a Functional Analysis board. Switch the board to Functional Analysis first.",
+    };
+  }
+
+  const grid = useIndex ? index.grid : osFindGrid(container);
+  const cards = useIndex ? index.cards : osCollectCardsInGrid(grid || container);
+  const screens = [];
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    const entry = useIndex ? index.byId[card.id] : null;
+    const frame = entry ? entry.embeddedFrame : osCardEmbeddedFrame(card);
+    if (!frame) continue;
+    const functionalCard = entry ? entry.functionalCard : osCardFunctionalCard(card);
+    if (!functionalCard) continue;
+    screens.push({
+      cardId: card.id,
+      frameId: frame.id,
+      cardName: entry ? osEntryDisplayName(entry) : osCardDisplayName(card),
+      frameName: frame.name || "",
+    });
+  }
+
+  if (!screens.length) {
+    return {
+      eligible: false,
+      reason: "No Functional Analysis screens found in this section.",
+    };
+  }
+
+  return {
+    eligible: true,
+    sectionId: root.section.id,
+    sectionName: root.section.name || "",
+    boardType: "functional-analysis",
+    screens: screens,
+    screenCount: screens.length,
+  };
+}
+
+// Apply a validated FunctionalAnalysisV1 to a card's Functional Card fields.
+// Re-resolves nodes by id (never trusts references across the network await).
+// Overwrites each field the model returned content for (matching the shipped
+// Analyze Design overwrite-and-warn behavior). Mirrors osApplyDesignReviewAnalysis.
+async function osApplyFunctionalAnalysis(sectionId, cardId, analysis) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    throw new Error("Create Documentation is only available in Figma design files.");
+  }
+  if (!analysis || typeof analysis !== "object") {
+    throw new Error("No documentation result to apply.");
+  }
+
+  const card = await osResolveScreenCardById(cardId);
+
+  const tokens = osResolveTokens(
+    OS_BASE_TOKENS,
+    osResolveBoardType("functional-analysis"),
+    osResolveOrientation("passthrough")
+  );
+
+  const funcCard = osCardFunctionalCard(card);
+  const fieldNodes = osIndexFuncFieldNodes(funcCard);
+
+  const applied = [];
+  const skipped = [];
+
+  for (let i = 0; i < OS_FUNCTIONAL_SECTION_KEYS.length; i++) {
+    const key = OS_FUNCTIONAL_SECTION_KEYS[i];
+    const list = Array.isArray(analysis[key]) ? analysis[key] : [];
+    const text = osJoinAnalysisBullets(list);
+    if (!text) continue;
+    const node = osResolveFuncFieldNode(funcCard, fieldNodes, key);
+    if (!node) {
+      skipped.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
+      continue;
+    }
+    const ok = await osSetTextNodeCharacters(node, text, tokens.textColor);
+    if (ok) applied.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
+    else skipped.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
+  }
+
+  // Confidence note (header): a muted single line, written only when present.
+  const confidence =
+    analysis.meta && typeof analysis.meta === "object"
+      ? analysis.meta.confidence
+      : "";
+  if (confidence === "low" || confidence === "medium" || confidence === "high") {
+    const confNode = osResolveFuncFieldNode(
+      funcCard,
+      fieldNodes,
+      OS_FUNCTIONAL_HEADER.confidenceKey
+    );
+    if (confNode) {
+      // Heal boards built before the hug fix: a stale FILL/HEIGHT confidence
+      // node has ~0 width and would wrap the text vertically. Re-assert hug.
+      osMakeTextHug(confNode);
+      await osSetTextNodeCharacters(
+        confNode,
+        "Confidence: " + confidence,
+        tokens.mutedTextColor
+      );
+    }
+  }
+
+  return {
+    operation: "document",
+    sectionId: sectionId,
+    cardId: cardId,
+    cardName: osCardDisplayName(card),
+    applied: applied,
+    skipped: skipped,
+    engineVersion: OS_ENGINE_VERSION,
+  };
+}
+
+// Reset every functional section field back to its registry placeholder, in
+// the muted placeholder color, and clear the confidence note. Offline (no
+// network). Writing the byte-exact placeholder is required so extraction
+// re-classifies the field as empty on a later recompose. Mirrors
+// osResetDesignReviewFields.
+async function osResetFunctionalFields(sectionId, cardId) {
+  if (figma.editorType && figma.editorType !== "figma") {
+    throw new Error("Reset documentation is only available in Figma design files.");
+  }
+
+  const card = await osResolveScreenCardById(cardId);
+
+  const tokens = osResolveTokens(
+    OS_BASE_TOKENS,
+    osResolveBoardType("functional-analysis"),
+    osResolveOrientation("passthrough")
+  );
+
+  const funcCard = osCardFunctionalCard(card);
+  const fieldNodes = osIndexFuncFieldNodes(funcCard);
+
+  const applied = [];
+  const skipped = [];
+
+  for (let i = 0; i < OS_FUNCTIONAL_SECTION_KEYS.length; i++) {
+    const key = OS_FUNCTIONAL_SECTION_KEYS[i];
+    const node = osResolveFuncFieldNode(funcCard, fieldNodes, key);
+    if (!node) continue;
+    const placeholder = OS_FUNCTIONAL_PLACEHOLDERS[key];
+    if (typeof placeholder !== "string") continue;
+    const ok = await osSetTextNodeCharacters(
+      node,
+      placeholder,
+      tokens.reviewPlaceholderColor
+    );
+    if (ok) applied.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
+    else skipped.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
+  }
+
+  // Clear the confidence note too.
+  const confNode = osResolveFuncFieldNode(
+    funcCard,
+    fieldNodes,
+    OS_FUNCTIONAL_HEADER.confidenceKey
+  );
+  if (confNode) {
+    await osSetTextNodeCharacters(confNode, "", tokens.mutedTextColor);
+  }
+
+  return {
+    operation: "resetDocumentation",
+    sectionId: sectionId,
+    cardId: cardId,
+    cardName: osCardDisplayName(card),
+    applied: applied,
+    skipped: skipped,
+    engineVersion: OS_ENGINE_VERSION,
+  };
+}
+
+// Trim a long description into a short section title (2-5 words).
+function osDeriveSectionTitleFromText(text) {
+  if (!text || typeof text !== "string") return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const first = trimmed.split(/[.!?\n]/)[0].trim();
+  if (!first) return "";
+  const words = first.split(/\s+/);
+  if (words.length <= 5) return first;
+  return words.slice(0, 5).join(" ");
+}
+
+// After section-scope Describe, read live Card Description text from each screen
+// card. Canvas text is canonical after apply — more reliable than reusing the
+// in-memory validation payload across network awaits.
+async function osCollectSectionDescribeSummaries(screens) {
+  const out = [];
+  if (!Array.isArray(screens)) return out;
+  for (let i = 0; i < screens.length; i++) {
+    const s = screens[i];
+    if (!s || !s.cardId) continue;
+    const card = await figma.getNodeByIdAsync(s.cardId);
+    if (!card || card.removed) continue;
+    const descNode = osFindDescendantTextByName(card, "Card Description");
+    const text =
+      descNode && typeof descNode.characters === "string"
+        ? descNode.characters.trim()
+        : "";
+    if (!text) continue;
+    const name =
+      (s.cardName && String(s.cardName)) ||
+      osCardDisplayName(card) ||
+      "Screen " + (i + 1);
+    out.push({ name: name, description: text });
+  }
+  return out;
+}
+
+// Offline fallback when the section-meta AI call fails or omits a title.
+function osBuildSectionMetaFallback(descriptions) {
+  if (!descriptions || !descriptions.length) return null;
+  let sectionDescription = "";
+  if (descriptions.length === 1) {
+    sectionDescription = descriptions[0].description;
+  } else {
+    const parts = [];
+    for (let i = 0; i < descriptions.length; i++) {
+      parts.push(descriptions[i].name + ": " + descriptions[i].description);
+    }
+    sectionDescription = parts.join(" ");
+  }
+  let sectionTitle = osDeriveSectionTitleFromText(descriptions[0].description);
+  if (!sectionTitle) sectionTitle = descriptions[0].name;
+  if (descriptions.length > 1) {
+    const broader = osDeriveSectionTitleFromText(sectionDescription);
+    if (broader) sectionTitle = broader;
+  }
+  return {
+    sectionTitle: sectionTitle,
+    sectionDescription: sectionDescription,
   };
 }
 
@@ -5650,20 +6920,31 @@ async function osApplySectionMeta(sectionId, meta) {
   const applied = [];
   const skipped = [];
 
-  const title = typeof meta.sectionTitle === "string" ? meta.sectionTitle.trim() : "";
+  let title = typeof meta.sectionTitle === "string" ? meta.sectionTitle.trim() : "";
+  const desc =
+    typeof meta.sectionDescription === "string" ? meta.sectionDescription.trim() : "";
+
+  // Synthesis sometimes returns a description without a title; derive one so
+  // the Overview Header never stays at the compose default ("Screen Overview").
+  if (!title && desc) {
+    title = osDeriveSectionTitleFromText(desc);
+  }
+
   if (title) {
     const titleNode = osFindNamedTextChild(header, "Section Title");
     if (titleNode) {
       const ok = await osSetTextNodeCharacters(titleNode, title, tokens.textColor);
-      if (ok) applied.push("Section title");
-      else skipped.push("Section title");
+      if (ok) {
+        applied.push("Section title");
+        try {
+          section.name = title;
+        } catch (e) {}
+      } else skipped.push("Section title");
     } else {
       skipped.push("Section title");
     }
   }
 
-  const desc =
-    typeof meta.sectionDescription === "string" ? meta.sectionDescription.trim() : "";
   if (desc) {
     const descNode = osFindNamedTextChild(header, "Section Description");
     if (descNode) {
@@ -5673,6 +6954,11 @@ async function osApplySectionMeta(sectionId, meta) {
     } else {
       skipped.push("Section description");
     }
+  }
+
+  const descNodeLayout = osFindNamedTextChild(header, "Section Description");
+  if (descNodeLayout) {
+    osApplySectionDescriptionWidth(descNodeLayout, tokens.sectionDescriptionMaxWidth);
   }
 
   return {
@@ -5685,11 +6971,43 @@ async function osApplySectionMeta(sectionId, meta) {
   };
 }
 
+// Skip invisible instance children only while probing. Embedded screen designs
+// are often component instances; descending into their hidden children makes
+// every per-card subtree walk (functional/review card lookup, review-field
+// extraction) traverse thousands of nodes and lags the canvas on selection.
+// The probe only reads visible plugin-created frames, so this is safe here.
+// Scoped (save/restore) so MCP node-inspection and recompose paths are
+// unaffected; restored in finally so a throwing probe cannot leak the flag.
 function osProbeOrganizeScreensContext() {
+  const prevSkipInvisible = figma.skipInvisibleInstanceChildren;
+  figma.skipInvisibleInstanceChildren = true;
+  try {
+    return osProbeOrganizeScreensContextImpl();
+  } finally {
+    figma.skipInvisibleInstanceChildren = prevSkipInvisible;
+  }
+}
+
+function osProbeOrganizeScreensContextImpl() {
   const result = osProbeOrganizeScreensContextCore();
   if (result && typeof result === "object") {
     const sel = (figma.currentPage && figma.currentPage.selection) || [];
     result.flowEligible = osComputeFlowEligible(sel);
+
+    // Selective-flow preview (edit mode): surface how an Apply with flow ON
+    // would scope, so the panel can tell the user before they commit. Reuses
+    // the same tri-state resolver the apply path uses.
+    if (result.mode === "edit") {
+      const editBoards = osResolveSelectedBoards(sel);
+      if (editBoards.length === 1) {
+        const scope = osResolveSelectedFlowScope(editBoards[0].container);
+        result.flowWouldScope = scope.action === "set";
+        result.flowScopeCount = scope.action === "set" ? scope.ids.length : 0;
+      } else {
+        result.flowWouldScope = false;
+        result.flowScopeCount = 0;
+      }
+    }
 
     // Capability model: the engine is the single source of truth. We push the
     // full per-board-type map (so the UI can react to the board-type dropdown
@@ -5702,40 +7020,122 @@ function osProbeOrganizeScreensContext() {
         : "custom";
     result.capabilities = osBoardTypeCapabilities(editedBoardType);
 
+    // Single-pass card index (probe-only fast path). The section eligibility
+    // resolvers below would otherwise walk each card's subtree ~4× (embedded
+    // frame + review/functional card + framework + display name). Build one
+    // bounded index for the resolved board here and pass it in, so every card
+    // is walked once and the embedded user screens are treated as leaves.
+    let probeCardIndex = null;
+    if (
+      editedBoardType === "design-review" ||
+      editedBoardType === "functional-analysis"
+    ) {
+      const probeBoards = osResolveSelectedBoards(sel);
+      if (probeBoards.length === 1) {
+        const probeContainer =
+          probeBoards[0].container ||
+          osFindContainerInSection(probeBoards[0].section);
+        if (probeContainer) {
+          probeCardIndex = osBuildProbeCardIndex(probeContainer);
+        }
+      }
+    }
+
     // Analyze Design eligibility (presentation only; the runtime re-resolves
     // the target at run time). Trimmed to what the UI renders. A single card
     // selection is card-scoped; otherwise a Design Review section is
     // section-scoped (all its standard review screens).
-    const ad = osResolveAnalyzeDesignTarget();
-    if (ad.eligible === true) {
-      result.analyzeDesign = {
-        eligible: true,
-        target: "card",
-        sectionId: ad.sectionId,
-        cardId: ad.cardId,
-        frameId: ad.frameId,
-        cardName: ad.cardName,
-        frameworkId: ad.frameworkId,
-        boardType: ad.boardType,
-        hasExistingContent: ad.hasExistingContent === true,
-      };
-    } else {
-      const sectionTarget = osResolveAnalyzeDesignSectionTarget();
-      if (sectionTarget.eligible === true) {
+    //
+    // Board-type gate: the eligible path requires the selection to resolve to a
+    // single board, which is exactly when the probe is in `edit` mode, so a
+    // Design Review surface can only exist when editedBoardType is
+    // "design-review". On any other board type the resolvers would scan the
+    // whole board only to return eligible:false — skip that scan. `reason` is
+    // diagnostic only (the panel renders eligibility/target/screenCount), so the
+    // gated-off copy can be generic.
+    if (editedBoardType === "design-review") {
+      const ad = osResolveAnalyzeDesignTarget();
+      if (ad.eligible === true) {
         result.analyzeDesign = {
           eligible: true,
-          target: "section",
-          sectionId: sectionTarget.sectionId,
-          sectionName: sectionTarget.sectionName,
-          boardType: sectionTarget.boardType,
-          screenCount: sectionTarget.screenCount,
+          target: "card",
+          sectionId: ad.sectionId,
+          cardId: ad.cardId,
+          frameId: ad.frameId,
+          cardName: ad.cardName,
+          frameworkId: ad.frameworkId,
+          boardType: ad.boardType,
+          hasExistingContent: ad.hasExistingContent === true,
         };
       } else {
-        result.analyzeDesign = {
-          eligible: false,
-          reason: ad.reason,
-        };
+        const sectionTarget = osResolveAnalyzeDesignSectionTarget(probeCardIndex);
+        if (sectionTarget.eligible === true) {
+          result.analyzeDesign = {
+            eligible: true,
+            target: "section",
+            sectionId: sectionTarget.sectionId,
+            sectionName: sectionTarget.sectionName,
+            boardType: sectionTarget.boardType,
+            screenCount: sectionTarget.screenCount,
+          };
+        } else {
+          result.analyzeDesign = {
+            eligible: false,
+            reason: ad.reason,
+          };
+        }
       }
+    } else {
+      result.analyzeDesign = {
+        eligible: false,
+        reason: "Select a screen card on a Design Review board.",
+      };
+    }
+
+    // Create Documentation eligibility (Functional Analysis surface). Mutually
+    // exclusive with Analyze Design by surface — a Functional Analysis board has
+    // no review surface and vice versa — so no priority arbitration is needed.
+    // Card scope when one Functional Card is selected; otherwise section scope.
+    //
+    // Board-type gate: same reasoning as Analyze Design above — a Functional
+    // surface only exists when editedBoardType is "functional-analysis", so on
+    // any other board type we skip the full-board scan and return ineligible.
+    if (editedBoardType === "functional-analysis") {
+      const cd = osResolveCreateDocumentationTarget();
+      if (cd.eligible === true) {
+        result.createDocumentation = {
+          eligible: true,
+          target: "card",
+          sectionId: cd.sectionId,
+          cardId: cd.cardId,
+          frameId: cd.frameId,
+          cardName: cd.cardName,
+          boardType: cd.boardType,
+          hasExistingContent: cd.hasExistingContent === true,
+        };
+      } else {
+        const cdSection = osResolveCreateDocumentationSectionTarget(probeCardIndex);
+        if (cdSection.eligible === true) {
+          result.createDocumentation = {
+            eligible: true,
+            target: "section",
+            sectionId: cdSection.sectionId,
+            sectionName: cdSection.sectionName,
+            boardType: cdSection.boardType,
+            screenCount: cdSection.screenCount,
+          };
+        } else {
+          result.createDocumentation = {
+            eligible: false,
+            reason: cd.reason,
+          };
+        }
+      }
+    } else {
+      result.createDocumentation = {
+        eligible: false,
+        reason: "Select a screen card on a Functional Analysis board.",
+      };
     }
   }
   return result;
@@ -5772,8 +7172,12 @@ function osBoardHasDesignReviewSurface(container) {
   const grid = osFindGrid(container);
   const scope = grid || container;
   const cards = osCollectCardsInGrid(scope);
+  // Bounded per-card scan (see osBoardHasFunctionalSurface): a Review Card only
+  // lives in the card layout, so osBuildProbeCardEntry's embedded-screen prune
+  // keeps marker-less board-type inference cheap without descending into the
+  // user's design subtree.
   for (let i = 0; i < cards.length; i++) {
-    if (osCardReviewCard(cards[i])) return true;
+    if (osBuildProbeCardEntry(cards[i]).reviewCard) return true;
   }
   return false;
 }
@@ -5795,10 +7199,20 @@ function osResolveEditBoardSettings(container, metadataSettings) {
     review: null,
   };
   let boardType =
-    base.boardType === "design-review" ? "design-review" : "custom";
+    base.boardType === "design-review"
+      ? "design-review"
+      : base.boardType === "functional-analysis"
+      ? "functional-analysis"
+      : "custom";
   const marker = osReadBoardTypeMarker(container);
-  if (marker === "design-review" || marker === "custom") {
+  if (
+    marker === "design-review" ||
+    marker === "custom" ||
+    marker === "functional-analysis"
+  ) {
     boardType = marker;
+  } else if (osBoardHasFunctionalSurface(container)) {
+    boardType = "functional-analysis";
   } else if (osBoardHasDesignReviewSurface(container)) {
     boardType = "design-review";
   } else {
@@ -6357,6 +7771,40 @@ async function organizeScreensFromSelection(params) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export {
   organizeScreensFromSelection,
   osProbeOrganizeScreensContext,
@@ -6367,4 +7815,10 @@ export {
   osApplyDesignReviewAnalysis,
   osResetDesignReviewFields,
   osApplySectionMeta,
+  osCollectSectionDescribeSummaries,
+  osBuildSectionMetaFallback,
+  osResolveCreateDocumentationTarget,
+  osResolveCreateDocumentationSectionTarget,
+  osApplyFunctionalAnalysis,
+  osResetFunctionalFields,
 };

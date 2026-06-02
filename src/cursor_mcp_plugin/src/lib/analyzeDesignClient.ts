@@ -37,6 +37,12 @@ export interface AnalyzeDesignBackendRequest {
   systemContext: string;
   instruction: string;
   model?: string;
+  /**
+   * Optional token ceiling. The backend clamps it to a safe band and defaults
+   * to 1200 when omitted. Used by the functional documentation mode, whose
+   * 8-section output can otherwise truncate at the default.
+   */
+  max_tokens?: number;
 }
 
 export interface AnalyzeDesignBackendData {

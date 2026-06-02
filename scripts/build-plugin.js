@@ -40,6 +40,12 @@ const EXPORT_FOOTER =
   "  osApplyDesignReviewAnalysis,\n" +
   "  osResetDesignReviewFields,\n" +
   "  osApplySectionMeta,\n" +
+  "  osCollectSectionDescribeSummaries,\n" +
+  "  osBuildSectionMetaFallback,\n" +
+  "  osResolveCreateDocumentationTarget,\n" +
+  "  osResolveCreateDocumentationSectionTarget,\n" +
+  "  osApplyFunctionalAnalysis,\n" +
+  "  osResetFunctionalFields,\n" +
   "};\n";
 
 function extractBetween(source, startMarker, endMarker) {

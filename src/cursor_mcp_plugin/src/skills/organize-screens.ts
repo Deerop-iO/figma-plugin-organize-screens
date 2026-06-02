@@ -29,6 +29,12 @@ const BOARD_TYPE_OPTIONS: ReadonlyArray<{
     intent:
       "Baseline layout plus an editable Review Card under each screen (What's good, Questions, Concerns, Ideas, Notes).",
   },
+  {
+    id: "functional-analysis",
+    label: "Functional Analysis",
+    intent:
+      "A full-width Functional Card stacked under each screen for structured functional documentation, fillable with AI via Create Documentation.",
+  },
 ];
 
 type AnnotationsMode = "off" | "compact" | "expanded";
@@ -229,6 +235,17 @@ function renderOrganizeScreens(
   flowToggleRow.appendChild(flowCheckbox);
   flowToggleRow.appendChild(flowToggleText);
   flowSection.appendChild(flowToggleRow);
+  flowCheckbox.addEventListener("change", () => {
+    refreshFlowScopeHint();
+  });
+
+  // Edit mode only: shows whether Apply will scope flow to the selected subset
+  // ("Flow: N selected screens") or span the whole board, so scoping is never
+  // silent. Driven by the engine probe's flowWouldScope / flowScopeCount.
+  const flowScopeHint = document.createElement("p");
+  flowScopeHint.className = "footnote";
+  flowScopeHint.hidden = true;
+  flowSection.appendChild(flowScopeHint);
 
   panel.appendChild(flowSection);
 
@@ -284,7 +301,7 @@ function renderOrganizeScreens(
   // Design Review only: three scoped actions on the selected screen card. Lit
   // up by the runtime's `analyzeDesign` eligibility, independent of the
   // generate/apply primary action.
-  //   - Describe screen (AI): fills only the Card Description.
+  //   - Describe screen (AI): fills the Card Description plus section title/description.
   //   - Review design (AI): fills only the review section.
   //   - Reset review results (local): review fields back to placeholders.
   const describeBtn = document.createElement("button");
@@ -307,6 +324,28 @@ function renderOrganizeScreens(
   resetReviewBtn.textContent = "Reset review results";
   resetReviewBtn.hidden = true;
   runSection.appendChild(resetReviewBtn);
+
+  // Functional Analysis only: a single adaptive AI action (card or whole
+  // section) plus a local reset. Lit up by the runtime's `createDocumentation`
+  // eligibility; mutually exclusive with the Design Review actions by surface.
+  const documentBtn = document.createElement("button");
+  documentBtn.type = "button";
+  documentBtn.className = "button button-secondary button-block";
+  documentBtn.textContent = "Create Documentation (AI)";
+  documentBtn.hidden = true;
+  runSection.appendChild(documentBtn);
+
+  const resetDocumentationBtn = document.createElement("button");
+  resetDocumentationBtn.type = "button";
+  resetDocumentationBtn.className = "button button-secondary button-block";
+  resetDocumentationBtn.textContent = "Reset documentation";
+  resetDocumentationBtn.hidden = true;
+  runSection.appendChild(resetDocumentationBtn);
+
+  const documentHint = document.createElement("p");
+  documentHint.className = "footnote";
+  documentHint.hidden = true;
+  runSection.appendChild(documentHint);
 
   const analyzeHint = document.createElement("p");
   analyzeHint.className = "footnote";
@@ -368,9 +407,16 @@ function renderOrganizeScreens(
   // Whether the current selection can drive an in-place flow (2+ frames, or a
   // section with 2+ child frames). Pushed by the runtime on every context.
   let currentFlowEligible = false;
+  // Selective-flow preview pushed by the engine (edit mode): whether an Apply
+  // with flow ON would scope to the selected subset, and how many cards.
+  let currentFlowWouldScope = false;
+  let currentFlowScopeCount = 0;
   // Analyze Design eligibility for the current selection (engine-owned). Null
   // until the first probe; the action is hidden unless `eligible` is true.
   let currentAnalyze: AnalyzeDesignEligibility | null = null;
+  // Create Documentation eligibility (Functional Analysis surface). Mutually
+  // exclusive with `currentAnalyze` by surface. Null until the first probe.
+  let currentDocument: AnalyzeDesignEligibility | null = null;
   // Separate busy flag so an in-flight analysis disables the analyze button
   // without entangling the generate/apply primary button state.
   let analyzeBusy = false;
@@ -444,11 +490,26 @@ function renderOrganizeScreens(
     return !!(currentAnalyze && currentAnalyze.eligible);
   }
 
-  // Which analyze action is in flight, so only that button shows a spinner
-  // label while all three (plus run/flow) stay disabled.
-  let analyzeBusyAction: "describe" | "review" | "resetReview" | null = null;
+  function documentEligible(): boolean {
+    if (!(currentDocument && currentDocument.eligible)) return false;
+    const bt = currentDocument.boardType || "functional-analysis";
+    const caps = capabilitiesByBoardType[bt];
+    // Default to allowed when capabilities are absent (older engine pairing).
+    return !caps || caps.documentation !== false;
+  }
 
-  function setAnalyzeBusy(b: boolean, action?: "describe" | "review" | "resetReview") {
+  type AnalyzeBusyAction =
+    | "describe"
+    | "review"
+    | "resetReview"
+    | "document"
+    | "resetDocumentation";
+
+  // Which analyze/document action is in flight, so only that button shows a
+  // spinner label while the others (plus run/flow) stay disabled.
+  let analyzeBusyAction: AnalyzeBusyAction | null = null;
+
+  function setAnalyzeBusy(b: boolean, action?: AnalyzeBusyAction) {
     analyzeBusy = b;
     analyzeBusyAction = b ? action || null : null;
     runBtn.disabled = busy || b || currentMode === "unsupported";
@@ -483,7 +544,36 @@ function renderOrganizeScreens(
         ? "Runs on all " +
           n +
           " screens in this section. Describe fills each screen description plus the section title and description; Review fills each review section (both AI). Reset returns every review section to placeholders."
-        : "Describe fills the screen description; Review fills the review section (both AI, overwriting existing text). Reset returns the review section to placeholders.";
+        : "Describe fills the screen description plus the section title and description; Review fills the review section (both AI, overwriting existing text). Reset returns the review section to placeholders.";
+    }
+
+    // Functional Analysis: a single adaptive Create Documentation action + reset.
+    const docEligible = documentEligible();
+    const docDisabled = busy || analyzeBusy || !docEligible;
+
+    documentBtn.hidden = !docEligible;
+    resetDocumentationBtn.hidden = !docEligible;
+    documentBtn.disabled = docDisabled;
+    resetDocumentationBtn.disabled = docDisabled;
+
+    documentBtn.textContent =
+      analyzeBusyAction === "document"
+        ? "Documenting..."
+        : "Create Documentation (AI)";
+    resetDocumentationBtn.textContent =
+      analyzeBusyAction === "resetDocumentation"
+        ? "Resetting..."
+        : "Reset documentation";
+
+    documentHint.hidden = !docEligible;
+    if (docEligible) {
+      const isSection = !!(currentDocument && currentDocument.target === "section");
+      const n = (currentDocument && currentDocument.screenCount) || 0;
+      documentHint.textContent = isSection
+        ? "Runs on all " +
+          n +
+          " screens in this section, generating functional documentation (AI) into each Functional Card. Existing text is overwritten. Reset returns every Functional Card to placeholders."
+        : "Generates functional documentation (AI) into this screen's Functional Card, overwriting existing text. Reset returns the Functional Card to placeholders.";
     }
   }
 
@@ -505,6 +595,25 @@ function renderOrganizeScreens(
   function refreshFlowButton() {
     flowBtn.hidden = !currentFlowEligible;
     flowBtn.disabled = busy || !currentFlowEligible;
+  }
+
+  // Edit mode: surface how Apply will scope flow. Hidden unless flow is ON in
+  // the form (the scope only matters when an overlay is drawn).
+  function refreshFlowScopeHint() {
+    if (currentMode !== "edit" || !flowCheckbox.checked) {
+      flowScopeHint.hidden = true;
+      return;
+    }
+    flowScopeHint.hidden = false;
+    if (currentFlowWouldScope && currentFlowScopeCount >= 2) {
+      flowScopeHint.textContent =
+        "Flow: " +
+        currentFlowScopeCount +
+        " selected screens (arrows connect only these, in selection order).";
+    } else {
+      flowScopeHint.textContent =
+        "Flow: all screens. Select 2+ Screen Cards before Apply to connect only those.";
+    }
   }
 
   /** Whether the board type currently selected in the form can host annotations. */
@@ -604,7 +713,11 @@ function renderOrganizeScreens(
   function applyContext(context: OrganizeScreensSelectionContext) {
     currentMode = context.mode;
     currentFlowEligible = context.flowEligible === true;
+    currentFlowWouldScope = context.flowWouldScope === true;
+    currentFlowScopeCount =
+      typeof context.flowScopeCount === "number" ? context.flowScopeCount : 0;
     currentAnalyze = context.analyzeDesign || null;
+    currentDocument = context.createDocumentation || null;
     // Capabilities are engine-owned; refresh the local copy each context push.
     capabilitiesByBoardType = context.capabilitiesByBoardType || {};
     preservedAnnotationCount =
@@ -722,6 +835,7 @@ function renderOrganizeScreens(
     }
     runBtn.disabled = busy || currentMode === "unsupported";
     refreshFlowButton();
+    refreshFlowScopeHint();
     refreshResetButton();
     refreshAnalyzeButton();
     // Reflect the (possibly updated) capabilities + preserved-count for the
@@ -783,6 +897,11 @@ function renderOrganizeScreens(
     if (appliedSettings.boardType !== form.boardType) return "layout";
     if (appliedSettings.orientation !== form.orientation) return "layout";
     if (appliedSettings.flow !== form.flow) return "layout";
+    // A pending flow-scope gesture (flow ON + a 2+ subset selected) is a
+    // layout-level change even when no form field moved, so Apply is never
+    // blocked as "no changes". The engine re-derives the scope from the live
+    // selection and no-ops if it matches what is already stored.
+    if (form.flow && currentFlowWouldScope) return "layout";
     if (appliedSettings.annotationsMode !== form.annotationsMode) {
       return "annotationsOnly";
     }
@@ -809,11 +928,22 @@ function renderOrganizeScreens(
         const turningOffReview =
           appliedSettings?.boardType === "design-review" &&
           form.boardType !== "design-review";
+        // Surface selective-flow scoping in the confirm so it is never silent.
+        const scopeLine =
+          flowCheckbox.checked &&
+          currentFlowWouldScope &&
+          currentFlowScopeCount >= 2
+            ? " Flow will connect only the " +
+              currentFlowScopeCount +
+              " selected screens, in selection order."
+            : "";
         const ok = await inlineConfirm({
           title: turningOffReview ? "Remove review cards?" : "Update board layout?",
           body: turningOffReview
-            ? "Switching away from Design Review removes the Review Card under each screen, including any feedback typed into them. Edited card titles, descriptions, and renamed frames are still preserved. This cannot be undone from the panel."
-            : "The layout will be rebuilt with the new orientation / settings. Text you edited (section and card titles, descriptions, and review feedback) and any frames you renamed are always preserved. Manual spacing tweaks on the container or cards may reset to baseline defaults.",
+            ? "Switching away from Design Review removes the Review Card under each screen, including any feedback typed into them. Edited card titles, descriptions, and renamed frames are still preserved. This cannot be undone from the panel." +
+              scopeLine
+            : "The layout will be rebuilt with the new orientation / settings. Text you edited (section and card titles, descriptions, and review feedback) and any frames you renamed are always preserved. Manual spacing tweaks on the container or cards may reset to baseline defaults." +
+              scopeLine,
           confirmLabel: turningOffReview ? "Remove review cards" : "Update layout",
           cancelLabel: "Cancel",
         });
@@ -971,6 +1101,76 @@ function renderOrganizeScreens(
     resultHost.innerHTML = "";
     ctx.trackEvent("organize_screens_reset_review", { target, screenCount: n });
     ctx.send({ type: "reset-review", target });
+  });
+
+  // ---------- Create Documentation handlers (Functional Analysis) ----------
+  function documentTarget(): "card" | "section" {
+    return currentDocument && currentDocument.target === "section"
+      ? "section"
+      : "card";
+  }
+
+  documentBtn.addEventListener("click", async () => {
+    if (busy || analyzeBusy) return;
+    if (!documentEligible()) return;
+
+    const target = documentTarget();
+    if (target === "section") {
+      const n = (currentDocument && currentDocument.screenCount) || 0;
+      const ok = await inlineConfirm({
+        title: "Document all " + n + " screens?",
+        body:
+          "This runs the AI on every screen in this section (" +
+          n +
+          " calls) and writes functional documentation into each Functional Card. Existing text in those fields is overwritten.",
+        confirmLabel: "Create Documentation",
+        cancelLabel: "Cancel",
+      });
+      if (!ok) return;
+      if (busy || analyzeBusy) return;
+      if (!documentEligible()) return;
+    }
+
+    setAnalyzeBusy(true, "document");
+    resultHost.innerHTML = "";
+    ctx.trackEvent("organize_screens_create_documentation", {
+      target,
+      screenCount: (currentDocument && currentDocument.screenCount) || 0,
+      hasExistingContent: !!(currentDocument && currentDocument.hasExistingContent),
+    });
+    ctx.send({ type: "create-documentation", target });
+  });
+
+  resetDocumentationBtn.addEventListener("click", async () => {
+    if (busy || analyzeBusy) return;
+    if (!documentEligible()) return;
+
+    const target = documentTarget();
+    const n = (currentDocument && currentDocument.screenCount) || 0;
+    const body =
+      target === "section"
+        ? "This clears every Functional Card section on all " +
+          n +
+          " screens back to placeholder text, removing both AI-generated and hand-written documentation."
+        : "This clears the Functional Card sections back to placeholder text, removing both AI-generated and hand-written documentation.";
+
+    const ok = await inlineConfirm({
+      title:
+        target === "section"
+          ? "Reset documentation on " + n + " screens?"
+          : "Reset documentation?",
+      body,
+      confirmLabel: "Reset",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    if (busy || analyzeBusy) return;
+    if (!documentEligible()) return;
+
+    setAnalyzeBusy(true, "resetDocumentation");
+    resultHost.innerHTML = "";
+    ctx.trackEvent("organize_screens_reset_documentation", { target, screenCount: n });
+    ctx.send({ type: "reset-documentation", target });
   });
 
   // ---------- Reset-to-screens handler ----------
@@ -1144,18 +1344,27 @@ function renderOrganizeScreens(
     return "Working\u2026";
   }
 
+  type AnalyzeResultOperation =
+    | "describe"
+    | "review"
+    | "resetReview"
+    | "document"
+    | "resetDocumentation";
+
   function analyzeOperationLabel(
-    operation: "describe" | "review" | "resetReview",
+    operation: AnalyzeResultOperation,
     target?: "card" | "section"
   ): string {
     const suffix = target === "section" ? " (section)" : "";
     if (operation === "describe") return "Describe screen" + suffix;
     if (operation === "resetReview") return "Reset review results" + suffix;
+    if (operation === "document") return "Create Documentation" + suffix;
+    if (operation === "resetDocumentation") return "Reset documentation" + suffix;
     return "Review design" + suffix;
   }
 
   function renderAnalyzeResult(
-    operation: "describe" | "review" | "resetReview",
+    operation: AnalyzeResultOperation,
     applied: string[],
     skipped: string[],
     cardName?: string,
@@ -1166,10 +1375,11 @@ function renderOrganizeScreens(
     const block = document.createElement("div");
     block.className = "result";
 
-    const updatedEmpty =
-      operation === "resetReview"
-        ? "Nothing (already at placeholders)"
-        : "Nothing (no new content)";
+    const isReset =
+      operation === "resetReview" || operation === "resetDocumentation";
+    const updatedEmpty = isReset
+      ? "Nothing (already at placeholders)"
+      : "Nothing (no new content)";
     const summary: Array<[string, string]> = [
       ["Operation", analyzeOperationLabel(operation, target)],
     ];
@@ -1178,7 +1388,7 @@ function renderOrganizeScreens(
       summary.push(["Screens", String(screenCount)]);
     }
     summary.push([
-      operation === "resetReview" ? "Reset" : "Updated",
+      isReset ? "Reset" : "Updated",
       applied.length ? applied.join(", ") : updatedEmpty,
     ]);
     if (skipped.length) summary.push(["Could not update", skipped.join(", ")]);

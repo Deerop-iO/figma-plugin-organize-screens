@@ -281,9 +281,20 @@ export const designReviewMode: AnalysisMode<DesignReviewAnalysisV1> = {
   },
 };
 
-export const ANALYSIS_MODES = {
-  designReview: designReviewMode,
+/**
+ * Registry of analysis modes keyed by id. Seeded with `designReview`; other
+ * modes self-register via `registerAnalysisMode` from their own module (e.g.
+ * `functionalAnalysis.ts`). Registration is done this way — rather than
+ * importing every mode here — so `designReview.ts` stays free of imports from
+ * its sibling modes and there is no circular dependency.
+ */
+export const ANALYSIS_MODES: Record<string, AnalysisMode<unknown>> = {
+  designReview: designReviewMode as AnalysisMode<unknown>,
 };
+
+export function registerAnalysisMode(mode: AnalysisMode<unknown>): void {
+  ANALYSIS_MODES[mode.id] = mode;
+}
 
 // ---------------------------------------------------------------------------
 // Section summary (text-only synthesis).

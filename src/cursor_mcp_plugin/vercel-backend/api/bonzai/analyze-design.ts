@@ -93,6 +93,21 @@ export default async function handler(
       process.env.BONZAI_DEFAULT_MODEL ||
       "gpt-4o";
 
+    // Optional, clamped token ceiling. Design Review keeps the 1200 default;
+    // the Functional Analysis "Create Documentation" mode requests more because
+    // an 8-section functional doc can otherwise truncate. Clamp to a sane band
+    // so a bad client value cannot blow up token spend.
+    const DEFAULT_MAX_TOKENS = 1200;
+    const MAX_TOKENS_CEILING = 2500;
+    const requestedMaxTokens =
+      typeof body.max_tokens === "number" && isFinite(body.max_tokens)
+        ? Math.floor(body.max_tokens)
+        : DEFAULT_MAX_TOKENS;
+    const maxTokens = Math.max(
+      256,
+      Math.min(MAX_TOKENS_CEILING, requestedMaxTokens)
+    );
+
     if (!instruction) {
       errorResponse(res, new Error("Missing instruction."), 400);
       return;
@@ -123,7 +138,7 @@ export default async function handler(
       ],
       response_format: { type: "json_object" },
       temperature: 0.2,
-      max_tokens: 1200,
+      max_tokens: maxTokens,
     };
 
     const endpoint = baseUrl.replace(/\/$/, "") + "/v1/chat/completions";
