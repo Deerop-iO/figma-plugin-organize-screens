@@ -349,14 +349,11 @@ const FUNCTIONAL_SECTIONS = {
     id: "functional",
     label: "Functional Analysis",
     sections: [
-      { key: "purpose", label: "\uD83C\uDFAF Screen Purpose", placeholder: "Click to document what this screen is for..." },
-      { key: "userActions", label: "\uD83D\uDC46 User Actions", placeholder: "List the actions a user can take here..." },
-      { key: "systemBehavior", label: "\u2699 System Behavior", placeholder: "Describe how the system responds..." },
-      { key: "inputOutput", label: "\uD83D\uDD04 Inputs / Outputs", placeholder: "Inputs accepted / outputs produced..." },
-      { key: "states", label: "\uD83D\uDD01 States", placeholder: "Loading, empty, success, error, edge states..." },
-      { key: "businessRules", label: "\uD83D\uDCD0 Business Rules", placeholder: "Rules, constraints, validations..." },
-      { key: "missingFunctionality", label: "\uD83D\uDEA7 Missing Functionality", placeholder: "Gaps or unfinished behavior..." },
-      { key: "openQuestions", label: "\u2753 Open Questions", placeholder: "Assumptions and unresolved questions..." },
+      { key: "overview", label: "\uD83C\uDFAF Overview", placeholder: "Click to document what this screen is and its core purpose..." },
+      { key: "relatedScreens", label: "\uD83D\uDD17 Related Screens & Flow", placeholder: "How this screen connects to the rest of the journey..." },
+      { key: "businessSummary", label: "\uD83D\uDCBC Business Summary", placeholder: "Non-technical summary of what this screen does and enables..." },
+      { key: "workflows", label: "\uD83D\uDD01 Workflows", placeholder: "User workflows this screen supports..." },
+      { key: "functionalRequirements", label: "\uD83D\uDCCB Functional Requirements", placeholder: "Key functional requirements and expected behaviors..." },
     ],
   },
 };
@@ -419,32 +416,32 @@ const OS_FUNCTIONAL_FIELD_LABELS = (function () {
   return map;
 })();
 
-// Advanced (single-document) Functional mode. Instead of the 8 structured
-// fields above, the Functional Card renders ONE editable TEXT node tagged with
-// this key, holding a long-form markdown report. Registered alongside the 8
-// section keys so extraction, placeholders, and labels stay registry-driven.
-const OS_FUNCTIONAL_DOC_KEY = "functionalDoc";
-const OS_FUNCTIONAL_DOC_SECTION = {
-  key: OS_FUNCTIONAL_DOC_KEY,
-  label: "\uD83D\uDCC4 Functional Documentation",
-  placeholder:
-    "Click to document this screen's functionality, or run Create Documentation...",
+// Functional fields rendered as native Figma UNORDERED lists (everything except
+// the prose `overview`). Mirrors the Review Card's list-field distinction so the
+// build/recompose path and the AI apply path format these the same way.
+const OS_FUNCTIONAL_LIST_KEYS = {
+  relatedScreens: true,
+  businessSummary: true,
+  workflows: true,
+  functionalRequirements: true,
 };
-OS_FUNCTIONAL_PLACEHOLDERS[OS_FUNCTIONAL_DOC_KEY] =
-  OS_FUNCTIONAL_DOC_SECTION.placeholder;
-OS_FUNCTIONAL_SECTION_BY_KEY[OS_FUNCTIONAL_DOC_KEY] = OS_FUNCTIONAL_DOC_SECTION;
-OS_FUNCTIONAL_FIELD_LABELS[OS_FUNCTIONAL_DOC_KEY] = "Functional Documentation";
-
-// Normalize functional settings. Mirrors osNormalizeReviewSettings: defaults to
-// "basic" (the original 8-field structure) so older boards without the field
-// migrate transparently. The board type does not change the default — mode is
-// only meaningful on functional-analysis boards but is persisted regardless so
-// a round trip restores it.
-function osNormalizeFunctionalSettings(fn, boardTypeId) {
-  void boardTypeId;
-  const mode = fn && fn.mode === "advanced" ? "advanced" : "basic";
-  return { mode: mode };
+function osIsFunctionalListFieldKey(key) {
+  return Object.prototype.hasOwnProperty.call(OS_FUNCTIONAL_LIST_KEYS, key);
 }
+
+// The full long-form markdown report is NOT a rendered TEXT field. It is stored
+// on the Functional Card frame as sharedPluginData under OS_FUNC_MARKDOWN_DATA_KEY
+// and surfaced only through the export (.md zip) and the section-meta synthesis.
+// The five summary fields above are what render on canvas.
+//
+// OS_FUNCTIONAL_DOC_KEY is kept ONLY as the in-memory serialization key used to
+// carry that markdown through a same-session recompose run (osExtractFuncFields
+// -> funcOverrides -> osBuildFunctionalCard). It is deliberately NOT registered
+// as a section (no label/placeholder/field node) and NOT persisted in the shared
+// metadata envelope, so a ~32 KB report per card can never bloat the 100 KB
+// envelope budget on multi-screen boards.
+const OS_FUNCTIONAL_DOC_KEY = "functionalDoc";
+const OS_FUNC_MARKDOWN_DATA_KEY = "osFuncMarkdown"; // full report, on the Functional Card frame
 
 // Board Type registry. A Board Type is a deterministic behavior profile (not a
 // visual preset) plus an optional per-card review surface:
@@ -529,15 +526,15 @@ const BOARD_TYPES = {
     reviewCard: null,
     functionalCard: {
       enabled: true,
+      // Must match the FUNCTIONAL_SECTIONS.functional registry keys; unknown
+      // keys are skipped by osBuildFunctionalCard, so a freshly built card would
+      // render no fields if these drift from the registry.
       sections: [
-        "purpose",
-        "userActions",
-        "systemBehavior",
-        "inputOutput",
-        "states",
-        "businessRules",
-        "missingFunctionality",
-        "openQuestions",
+        "overview",
+        "relatedScreens",
+        "businessSummary",
+        "workflows",
+        "functionalRequirements",
       ],
     },
   },
@@ -2682,6 +2679,15 @@ async function osBuildFuncSection(
   field.name = "Functional Field Text";
   box.appendChild(field);
   osMakeTextFill(field);
+  // The four summary list fields render as native Figma UNORDERED lists when
+  // they carry 2+ lines (e.g. restored content on recompose); the prose
+  // `overview` stays plain. Placeholders (single line) stay plain either way.
+  // Font is loaded by osCreateFuncFieldNode above, as osApplyReviewFieldListFormatting requires.
+  if (osIsFunctionalListFieldKey(fieldKey)) {
+    osApplyReviewFieldListFormatting(field);
+  } else {
+    osClearTextListOptions(field);
+  }
   return section;
 }
 
@@ -2690,16 +2696,12 @@ async function osBuildFuncSection(
 // `override.funcConfidence` renders a muted confidence note in the header.
 async function osBuildFunctionalCard(parent, frame, tokens, cfg, override, ctx) {
   void ctx;
-  const isAdvanced = !!(cfg && cfg.mode === "advanced");
-  // Basic mode renders the 8 structured section fields; Advanced renders a
-  // single long-form documentation field. The builder reads only its mode's
-  // keys from `override`, so a mode switch naturally yields placeholders for
-  // the new structure (no cross-mode content leak).
-  const sectionsKeys = isAdvanced
-    ? [OS_FUNCTIONAL_DOC_KEY]
-    : cfg && Array.isArray(cfg.sections) && cfg.sections.length
-    ? cfg.sections
-    : OS_FUNCTIONAL_SECTION_KEYS;
+  // Single unified structure: the fixed set of summary fields. The full
+  // long-form report is not a field — it is stored on the card frame below.
+  const sectionsKeys =
+    cfg && Array.isArray(cfg.sections) && cfg.sections.length
+      ? cfg.sections
+      : OS_FUNCTIONAL_SECTION_KEYS;
 
   const fcard = figma.createFrame();
   fcard.name = "Functional Card";
@@ -2791,10 +2793,6 @@ async function osBuildFunctionalCard(parent, frame, tokens, cfg, override, ctx) 
   for (let i = 0; i < sectionsKeys.length; i++) {
     const def = OS_FUNCTIONAL_SECTION_BY_KEY[sectionsKeys[i]];
     if (!def) continue;
-    // The single Advanced doc field holds a full report — give it more room.
-    const minHeight = isAdvanced
-      ? Math.max(tokens.reviewFieldMinHeight, tokens.reviewNotesMinHeight) * 2
-      : tokens.reviewFieldMinHeight;
     await osBuildFuncSection(
       content,
       def.label,
@@ -2802,8 +2800,20 @@ async function osBuildFunctionalCard(parent, frame, tokens, cfg, override, ctx) 
       override,
       def.placeholder,
       tokens,
-      minHeight
+      tokens.reviewFieldMinHeight
     );
+  }
+
+  // Restore the full markdown report (the export/section-meta source of truth)
+  // onto the card frame when a recompose round-trip carried it in `override`.
+  if (override && typeof override[OS_FUNCTIONAL_DOC_KEY] === "string") {
+    try {
+      fcard.setSharedPluginData(
+        OS_REVIEW_NAMESPACE,
+        OS_FUNC_MARKDOWN_DATA_KEY,
+        override[OS_FUNCTIONAL_DOC_KEY]
+      );
+    } catch (e) {}
   }
 
   return fcard;
@@ -3074,7 +3084,19 @@ async function osBuildCard(parent, frame, tokens, plan, ctx, frameIndex, profile
         ? ctx.funcOverrides[frame.id]
         : null;
     if (docOverrideForBaseline && typeof docOverrideForBaseline === "object") {
-      baselineEntry.doc = docOverrideForBaseline;
+      // Persist ONLY the short summary fields in the envelope. The full markdown
+      // report (OS_FUNCTIONAL_DOC_KEY) is deliberately excluded so a multi-screen
+      // board never bloats the shared 100 KB metadata budget — it lives on the
+      // card frame (sharedPluginData) and rides same-session recompose through
+      // the in-memory funcOverride passed to osBuildFunctionalCard.
+      const baselineDoc = {};
+      for (let bdi = 0; bdi < OS_FUNCTIONAL_SECTION_KEYS.length; bdi++) {
+        const bdk = OS_FUNCTIONAL_SECTION_KEYS[bdi];
+        if (typeof docOverrideForBaseline[bdk] === "string") {
+          baselineDoc[bdk] = docOverrideForBaseline[bdk];
+        }
+      }
+      if (Object.keys(baselineDoc).length) baselineEntry.doc = baselineDoc;
     }
     // Persist the preserved note even when this board type does not render it,
     // so a Custom -> Design Review -> Custom round trip keeps text + placement.
@@ -3652,10 +3674,6 @@ function osMakeBuildSectionCtx(opts) {
     funcOverrides: opts.funcOverrides || null,
     annotationOverrides: opts.annotationOverrides || null,
     decisionOverrides: opts.decisionOverrides || null,
-    // Functional Card mode ("basic" | "advanced"). Dynamic setting threaded from
-    // the compose/recompose params; the static board-type profile is unaware of
-    // it (mirrors how `flow` rides on opts, not the profile).
-    functionalMode: opts.functionalMode === "advanced" ? "advanced" : "basic",
     flow: opts.flow === true,
     flowLabels: opts.flowLabels || [],
     flowFrameIds: Array.isArray(opts.flowFrameIds) ? opts.flowFrameIds : null,
@@ -3885,15 +3903,7 @@ async function osBuildSection_createFunctionalCards(bsc) {
   const ctx = bsc.ctx;
   const pending = (ctx && ctx.pendingDocs) || [];
   if (!pending.length) return;
-  // Merge the dynamic mode into the static profile cfg so the builder can
-  // branch basic (8 fields) vs advanced (single doc) without the profile
-  // carrying mode.
-  const baseCfg = bsc.profile.functionalCard || {};
-  const cfg = {};
-  for (const k in baseCfg) {
-    if (Object.prototype.hasOwnProperty.call(baseCfg, k)) cfg[k] = baseCfg[k];
-  }
-  cfg.mode = bsc.functionalMode === "advanced" ? "advanced" : "basic";
+  const cfg = bsc.profile.functionalCard || {};
   for (let i = 0; i < pending.length; i++) {
     const entry = pending[i];
     if (!entry || !entry.funcCol || entry.funcCol.removed) continue;
@@ -3955,7 +3965,6 @@ function osBuildSection_writeMetadata(bsc) {
     variantGroups: bsc.ctx.variantGroupResults,
     flow: bsc.flow,
     flowFrameIds: bsc.flowFrameIds,
-    functionalMode: bsc.functionalMode,
   });
 }
 
@@ -4258,7 +4267,6 @@ function osNormalizeMetadata(env) {
           ? s.flowFrameIds.map(String)
           : null,
       review: review,
-      functional: osNormalizeFunctionalSettings(s.functional, boardType),
     },
     layout: {
       strategy:
@@ -4319,12 +4327,13 @@ function osNormalizeMetadata(env) {
                         const dk = OS_FUNCTIONAL_SECTION_KEYS[di];
                         if (typeof c.doc[dk] === "string") doc[dk] = c.doc[dk];
                       }
-                      // Also preserve the Advanced single-document field so an
-                      // Advanced doc survives a Functional -> Custom -> Functional
-                      // round trip within the same mode.
-                      if (typeof c.doc[OS_FUNCTIONAL_DOC_KEY] === "string") {
-                        doc[OS_FUNCTIONAL_DOC_KEY] = c.doc[OS_FUNCTIONAL_DOC_KEY];
-                      }
+                      // NOTE: the full markdown report (OS_FUNCTIONAL_DOC_KEY) is
+                      // deliberately NOT persisted in the metadata envelope — a
+                      // ~32 KB report per card would blow the shared 100 KB budget
+                      // on multi-screen boards. It lives on the live card frame
+                      // (sharedPluginData) and is carried through same-session
+                      // recompose via in-memory funcOverrides only. A board-type
+                      // round trip drops it (re-generatable; downloadable first).
                       if (Object.keys(doc).length) entry.doc = doc;
                     }
                     return entry;
@@ -4451,13 +4460,6 @@ function osWriteBoardMetadata(container, info) {
             notes: profile.reviewCard.notes === true,
           }
         : { enabled: false, status: true, sections: [], notes: true },
-      // Functional mode is a dynamic setting (not part of the static board-type
-      // profile), threaded in via info.functionalMode. Persisted regardless of
-      // board type so a Functional -> Custom -> Functional round trip restores it.
-      functional: osNormalizeFunctionalSettings(
-        { mode: info.functionalMode },
-        profile.id
-      ),
     },
     layout: {
       strategy: plan.strategy,
@@ -4807,6 +4809,16 @@ function osExtractFuncFields(card) {
       for (let i = 0; i < node.children.length; i++) stack.push(node.children[i]);
     }
   }
+  // Carry the full markdown report (stored on the Functional Card frame, not a
+  // TEXT field) so a same-session recompose replays it onto the rebuilt card via
+  // funcOverrides -> osBuildFunctionalCard.
+  try {
+    const md = fc.getSharedPluginData(OS_REVIEW_NAMESPACE, OS_FUNC_MARKDOWN_DATA_KEY);
+    if (md && typeof md === "string") {
+      out[OS_FUNCTIONAL_DOC_KEY] = md;
+      found = true;
+    }
+  } catch (e) {}
   return found ? out : null;
 }
 
@@ -5145,16 +5157,6 @@ function osClassifySettingsDelta(prev, next) {
     return "layout";
   }
   if (a.orientation !== b.orientation) return "layout";
-  // A functional mode switch (Basic <-> Advanced) rebuilds the Functional Card
-  // structure, so it is a layout change. Missing functional settings default to
-  // "basic" so older boards compare equal.
-  {
-    const aMode =
-      a.functional && a.functional.mode === "advanced" ? "advanced" : "basic";
-    const bMode =
-      b.functional && b.functional.mode === "advanced" ? "advanced" : "basic";
-    if (aMode !== bMode) return "layout";
-  }
   if ((a.flow === true) !== (b.flow === true)) return "layout";
   // A change to the scoped-flow subset (or its order) requires rebuilding the
   // overlay; an identical "keep" leaves it for the annotation/none paths.
@@ -5323,17 +5325,6 @@ async function osRecomposeBoard(section, params) {
       ? params.flow
       : !!(prevMeta && prevMeta.settings && prevMeta.settings.flow);
 
-  // Functional mode: an explicit param wins; otherwise reuse the board's stored
-  // mode so a non-mode recompose preserves the Functional Card structure.
-  const functionalMode =
-    params.functionalMode === "advanced" || params.functionalMode === "basic"
-      ? params.functionalMode
-      : prevMeta &&
-        prevMeta.settings &&
-        prevMeta.settings.functional &&
-        prevMeta.settings.functional.mode === "advanced"
-      ? "advanced"
-      : "basic";
   // Selective flow scope: an explicit param wins (Apply path) — including an
   // explicit null which clears the scope; otherwise reuse the board's stored
   // scope. Filtered against surviving frames after teardown prep below.
@@ -5561,7 +5552,6 @@ async function osRecomposeBoard(section, params) {
     funcOverrides: liveDocByFrameId,
     annotationOverrides: liveAnnotationByFrameId,
     decisionOverrides: state.decisions || null,
-    functionalMode: functionalMode,
     flow: flowEnabled,
     flowLabels: flowLabelsForBuild,
     flowFrameIds: flowFrameIds,
@@ -5670,18 +5660,6 @@ async function osApplyBoardEdit(sectionId, params) {
       ? params.flow
       : !!(prev && prev.settings && prev.settings.flow);
 
-  // Functional mode: explicit param wins; otherwise keep the board's stored
-  // mode (defaults to basic) so a non-mode edit does not silently switch it.
-  const nextFunctionalMode =
-    params.functionalMode === "advanced" || params.functionalMode === "basic"
-      ? params.functionalMode
-      : prev &&
-        prev.settings &&
-        prev.settings.functional &&
-        prev.settings.functional.mode === "advanced"
-      ? "advanced"
-      : "basic";
-
   // Selective flow scope: derive from the live selection at apply time. Only an
   // explicit gesture changes the durable scope (a 2+ subset sets it; selecting
   // all cards clears it; anything else keeps the stored value). Resolve before
@@ -5715,7 +5693,6 @@ async function osApplyBoardEdit(sectionId, params) {
     },
     flow: nextFlow,
     flowFrameIds: nextFlowFrameIds,
-    functional: { mode: nextFunctionalMode },
   };
   const delta = osClassifySettingsDelta(prev, { settings: nextSettings });
 
@@ -5789,9 +5766,6 @@ async function osApplyBoardEdit(sectionId, params) {
       // value (and its scope) so the metadata stays accurate.
       flow: nextFlow,
       flowFrameIds: nextFlowFrameIds,
-      // Functional mode is unchanged on an annotations-only patch; preserve the
-      // stored value so the metadata write does not reset it to basic.
-      functionalMode: nextFunctionalMode,
       // Preserve stored grouping — an annotations-only patch must not wipe
       // it, or a later layout recompose would lose the comparison strips.
       variantGroups: prev && Array.isArray(prev.variantGroups)
@@ -5824,7 +5798,6 @@ async function osApplyBoardEdit(sectionId, params) {
     sectionDescription: params.sectionDescription,
     flow: nextFlow,
     flowFrameIds: nextFlowFrameIds,
-    functionalMode: nextFunctionalMode,
   };
   const result = await osRecomposeBoard(node, recomposeParams);
   result.delta = "layout";
@@ -6309,17 +6282,6 @@ async function osSetTextNodeCharacters(node, text, color) {
   }
 }
 
-// Join a bullet array into a single text block (legacy `•` prefix join). Used by
-// Functional Analysis apply; Design Review uses native UNORDERED lists instead.
-function osJoinAnalysisBullets(items) {
-  const lines = [];
-  for (let i = 0; i < items.length; i++) {
-    const s = typeof items[i] === "string" ? items[i].trim() : "";
-    if (s) lines.push("\u2022 " + s);
-  }
-  return lines.join("\n");
-}
-
 // Trim and drop empty strings from a model list field.
 function osNormalizeAnalysisLines(items) {
   const lines = [];
@@ -6663,22 +6625,6 @@ function osResolveFuncFieldNode(funcCard, fieldNodes, fieldKey) {
   return osFindFuncFieldNodeByName(funcCard, fieldKey);
 }
 
-// Authoritative mode signal: a Functional Card's ACTUAL structure. A single
-// `functionalDoc` field => Advanced; otherwise the 8 section fields => Basic.
-// Used by apply/reset (so stale metadata can never write to the wrong shape)
-// and by the Create Documentation resolvers (so the runtime binding requests
-// the matching prompt + token ceiling). Tag index first, structural fallback
-// second, so a tag-stripped card still resolves.
-function osFunctionalCardMode(funcCard) {
-  if (!funcCard) return "basic";
-  const nodes = osIndexFuncFieldNodes(funcCard);
-  if (nodes[OS_FUNCTIONAL_DOC_KEY]) return "advanced";
-  if (osFindFuncFieldNodeByName(funcCard, OS_FUNCTIONAL_DOC_KEY)) {
-    return "advanced";
-  }
-  return "basic";
-}
-
 // True when a board still has at least one Functional Card on canvas (the
 // authoritative signal when metadata/marker are stale). Mirrors
 // osBoardHasDesignReviewSurface.
@@ -6696,22 +6642,6 @@ function osBoardHasFunctionalSurface(container) {
     if (osBuildProbeCardEntry(cards[i]).functionalCard) return true;
   }
   return false;
-}
-
-// Structural functional mode for a whole board: the first Functional Card's
-// structure (Advanced single doc vs Basic 8 fields), or null when the board has
-// no Functional Card. Used as the edit-form fallback when metadata is missing
-// or stale.
-function osBoardFunctionalMode(container) {
-  if (!container) return null;
-  const grid = osFindGrid(container);
-  const scope = grid || container;
-  const cards = osCollectCardsInGrid(scope);
-  for (let i = 0; i < cards.length; i++) {
-    const fc = osBuildProbeCardEntry(cards[i]).functionalCard;
-    if (fc) return osFunctionalCardMode(fc);
-  }
-  return null;
 }
 
 // Resolve the Create Documentation card target for the current selection.
@@ -6769,9 +6699,6 @@ function osResolveCreateDocumentationTarget() {
     cardName: osCardDisplayName(card),
     frameName: frame.name || "",
     boardType: "functional-analysis",
-    // Mode the runtime should request (structure-derived, so it always matches
-    // what will be written back).
-    mode: osFunctionalCardMode(funcCard),
     hasExistingContent: content.hasContent,
   };
 }
@@ -6809,9 +6736,6 @@ function osResolveCreateDocumentationSectionTarget(index) {
   const grid = useIndex ? index.grid : osFindGrid(container);
   const cards = useIndex ? index.cards : osCollectCardsInGrid(grid || container);
   const screens = [];
-  // Mode is board-level: the first Functional Card's structure decides it for
-  // the whole section.
-  let mode = null;
   for (let i = 0; i < cards.length; i++) {
     const card = cards[i];
     const entry = useIndex ? index.byId[card.id] : null;
@@ -6819,7 +6743,6 @@ function osResolveCreateDocumentationSectionTarget(index) {
     if (!frame) continue;
     const functionalCard = entry ? entry.functionalCard : osCardFunctionalCard(card);
     if (!functionalCard) continue;
-    if (mode === null) mode = osFunctionalCardMode(functionalCard);
     screens.push({
       cardId: card.id,
       frameId: frame.id,
@@ -6840,7 +6763,6 @@ function osResolveCreateDocumentationSectionTarget(index) {
     sectionId: root.section.id,
     sectionName: root.section.name || "",
     boardType: "functional-analysis",
-    mode: mode || "basic",
     screens: screens,
     screenCount: screens.length,
   };
@@ -6954,13 +6876,13 @@ async function osBuildFunctionalJourneyContext(sectionId) {
   return { screens: screens, edges: edges };
 }
 
-// Collect the Advanced functional documentation for export (read-only). Scope
-// follows the live selection: when one or more Screen Cards are selected, only
-// those are exported; when just the board/section is selected, every card is.
-// Advanced-only — Basic cards have no single markdown document, so a board with
-// no Advanced Functional Card is reported ineligible. Returns each card's name
-// + markdown so the runtime can hand plain strings to the UI (which builds the
-// zip + download). Empty/placeholder docs are skipped.
+// Collect the functional documentation for export (read-only). Scope follows
+// the live selection: when one or more Screen Cards are selected, only those are
+// exported; when just the board/section is selected, every card is. Reads the
+// full markdown report stored on each Functional Card frame (sharedPluginData),
+// returning each card's name + markdown so the runtime can hand plain strings to
+// the UI (which builds the zip + download). Cards with no stored report are
+// skipped; the runtime handles the empty case.
 function osCollectFunctionalDocuments() {
   if (figma.editorType && figma.editorType !== "figma") {
     return { eligible: false, reason: "Export runs in the Figma editor only." };
@@ -7000,37 +6922,27 @@ function osCollectFunctionalDocuments() {
     cards = osCollectCardsInGrid(grid || container);
   }
 
-  let hasAdvanced = false;
   const documents = [];
-  const placeholder = OS_FUNCTIONAL_PLACEHOLDERS[OS_FUNCTIONAL_DOC_KEY];
   for (let i = 0; i < cards.length; i++) {
     const card = cards[i];
     const funcCard = osCardFunctionalCard(card);
     if (!funcCard) continue;
-    if (osFunctionalCardMode(funcCard) !== "advanced") continue;
-    hasAdvanced = true;
-    const fieldNodes = osIndexFuncFieldNodes(funcCard);
-    const docNode = osResolveFuncFieldNode(
-      funcCard,
-      fieldNodes,
-      OS_FUNCTIONAL_DOC_KEY
-    );
-    if (!docNode || docNode.type !== "TEXT") continue;
-    const text = typeof docNode.characters === "string" ? docNode.characters : "";
-    const trimmed = text.trim();
-    if (!trimmed || trimmed === placeholder) continue;
+    let text = "";
+    try {
+      text = funcCard.getSharedPluginData(
+        OS_REVIEW_NAMESPACE,
+        OS_FUNC_MARKDOWN_DATA_KEY
+      );
+    } catch (e) {
+      text = "";
+    }
+    const trimmed = typeof text === "string" ? text.trim() : "";
+    if (!trimmed) continue;
     documents.push({
       cardId: card.id,
       name: osCardDisplayName(card),
       document: text,
     });
-  }
-
-  if (!hasAdvanced) {
-    return {
-      eligible: false,
-      reason: "Export is only available for Advanced functional analysis.",
-    };
   }
 
   return {
@@ -7040,10 +6952,15 @@ function osCollectFunctionalDocuments() {
   };
 }
 
-// Apply a validated FunctionalAnalysisV1 to a card's Functional Card fields.
-// Re-resolves nodes by id (never trusts references across the network await).
-// Overwrites each field the model returned content for (matching the shipped
-// Analyze Design overwrite-and-warn behavior). Mirrors osApplyDesignReviewAnalysis.
+// Apply a documentation result to a card's Functional Card. The result is a
+// two-pass shape: `{ document, summary? }` where `document` is the full
+// long-form markdown report (stored on the card frame, the export source of
+// truth) and `summary` is the optional 5-field canvas summary. Re-resolves
+// nodes by id (never trusts references across the network await).
+//
+// The markdown is stored FIRST so the download stays intact regardless of
+// whether the summary step succeeded. When `summary` is omitted (a degraded
+// pass-2), only the markdown is stored and the summary fields are left as-is.
 async function osApplyFunctionalAnalysis(sectionId, cardId, analysis) {
   if (figma.editorType && figma.editorType !== "figma") {
     throw new Error("Create Documentation is only available in Figma design files.");
@@ -7066,50 +6983,89 @@ async function osApplyFunctionalAnalysis(sectionId, cardId, analysis) {
   const applied = [];
   const skipped = [];
 
-  // Branch on the card's actual structure (authoritative mode signal), not on
-  // the analysis shape, so a stale/mismatched result can never write into the
-  // wrong structure.
-  const structuralMode = osFunctionalCardMode(funcCard);
-  if (structuralMode === "advanced") {
-    const docNode = osResolveFuncFieldNode(
-      funcCard,
-      fieldNodes,
-      OS_FUNCTIONAL_DOC_KEY
-    );
-    const docText =
-      typeof analysis.document === "string" ? analysis.document.trim() : "";
-    const label = OS_FUNCTIONAL_FIELD_LABELS[OS_FUNCTIONAL_DOC_KEY];
-    if (docText) {
-      if (!docNode) {
+  // 1) Store the full markdown report on the card frame first (export source of
+  // truth). Counts as a successful "Documentation" write so a degraded summary
+  // never makes the screen look entirely skipped.
+  const document =
+    typeof analysis.document === "string" ? analysis.document.trim() : "";
+  if (document) {
+    if (funcCard) {
+      try {
+        funcCard.setSharedPluginData(
+          OS_REVIEW_NAMESPACE,
+          OS_FUNC_MARKDOWN_DATA_KEY,
+          document
+        );
+        applied.push("Documentation");
+      } catch (e) {
+        skipped.push("Documentation");
+      }
+    } else {
+      skipped.push("Documentation");
+    }
+  }
+
+  // 2) Render the canvas summary when present. Overview is plain prose; the
+  // other four fields are bulleted.
+  // Track how many summary fields actually had content vs. how many resolved to
+  // a node on this card. When a summary has content but NONE of its fields
+  // resolve, the card was built by an older plugin version (different field
+  // tags) — the markdown is still stored, but nothing renders. We surface that
+  // as `staleStructure` so the run can tell the user to recompose, instead of
+  // silently reporting success with blank cards.
+  let summaryFieldsWithContent = 0;
+  let summaryFieldsResolved = 0;
+  const summary =
+    analysis.summary && typeof analysis.summary === "object"
+      ? analysis.summary
+      : null;
+  if (summary) {
+    const overviewText =
+      typeof summary.overview === "string" ? summary.overview.trim() : "";
+    if (overviewText) {
+      summaryFieldsWithContent += 1;
+      const label = OS_FUNCTIONAL_FIELD_LABELS["overview"] || "overview";
+      const node = osResolveFuncFieldNode(funcCard, fieldNodes, "overview");
+      if (!node) {
         skipped.push(label);
       } else {
-        const ok = await osSetTextNodeCharacters(docNode, docText, tokens.textColor);
+        summaryFieldsResolved += 1;
+        const ok = await osSetTextNodeCharacters(node, overviewText, tokens.textColor);
         if (ok) applied.push(label);
         else skipped.push(label);
       }
     }
-  } else {
-    for (let i = 0; i < OS_FUNCTIONAL_SECTION_KEYS.length; i++) {
-      const key = OS_FUNCTIONAL_SECTION_KEYS[i];
-      const list = Array.isArray(analysis[key]) ? analysis[key] : [];
-      const text = osJoinAnalysisBullets(list);
-      if (!text) continue;
+
+    const bulletKeys = [
+      "relatedScreens",
+      "businessSummary",
+      "workflows",
+      "functionalRequirements",
+    ];
+    for (let i = 0; i < bulletKeys.length; i++) {
+      const key = bulletKeys[i];
+      const list = osNormalizeAnalysisLines(summary[key]);
+      if (!list.length) continue;
+      summaryFieldsWithContent += 1;
       const node = osResolveFuncFieldNode(funcCard, fieldNodes, key);
       if (!node) {
         skipped.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
         continue;
       }
-      const ok = await osSetTextNodeCharacters(node, text, tokens.textColor);
+      summaryFieldsResolved += 1;
+      // Native Figma UNORDERED list (2+ items) or plain text (single item),
+      // matching Design Review — not literal "• " prefixes.
+      const ok = await osSetTextNodeUnorderedList(node, list, tokens.textColor);
       if (ok) applied.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
       else skipped.push(OS_FUNCTIONAL_FIELD_LABELS[key] || key);
     }
   }
 
+  const staleStructure =
+    summaryFieldsWithContent > 0 && summaryFieldsResolved === 0;
+
   // Confidence note (header): a muted single line, written only when present.
-  const confidence =
-    analysis.meta && typeof analysis.meta === "object"
-      ? analysis.meta.confidence
-      : "";
+  const confidence = summary ? summary.confidence : "";
   if (confidence === "low" || confidence === "medium" || confidence === "high") {
     const confNode = osResolveFuncFieldNode(
       funcCard,
@@ -7135,6 +7091,7 @@ async function osApplyFunctionalAnalysis(sectionId, cardId, analysis) {
     cardName: osCardDisplayName(card),
     applied: applied,
     skipped: skipped,
+    staleStructure: staleStructure,
     engineVersion: OS_ENGINE_VERSION,
   };
 }
@@ -7163,14 +7120,9 @@ async function osResetFunctionalFields(sectionId, cardId) {
   const applied = [];
   const skipped = [];
 
-  // Reset whatever structure was actually built (authoritative mode signal):
-  // the single Advanced doc field, or the 8 Basic section fields.
-  const resetKeys =
-    osFunctionalCardMode(funcCard) === "advanced"
-      ? [OS_FUNCTIONAL_DOC_KEY]
-      : OS_FUNCTIONAL_SECTION_KEYS;
-  for (let i = 0; i < resetKeys.length; i++) {
-    const key = resetKeys[i];
+  // Reset the five summary fields back to their placeholders.
+  for (let i = 0; i < OS_FUNCTIONAL_SECTION_KEYS.length; i++) {
+    const key = OS_FUNCTIONAL_SECTION_KEYS[i];
     const node = osResolveFuncFieldNode(funcCard, fieldNodes, key);
     if (!node) continue;
     const placeholder = OS_FUNCTIONAL_PLACEHOLDERS[key];
@@ -7192,6 +7144,13 @@ async function osResetFunctionalFields(sectionId, cardId) {
   );
   if (confNode) {
     await osSetTextNodeCharacters(confNode, "", tokens.mutedTextColor);
+  }
+
+  // Clear the stored full markdown report so a reset card has no export content.
+  if (funcCard) {
+    try {
+      funcCard.setSharedPluginData(OS_REVIEW_NAMESPACE, OS_FUNC_MARKDOWN_DATA_KEY, "");
+    } catch (e) {}
   }
 
   return {
@@ -7244,15 +7203,14 @@ async function osCollectSectionDescribeSummaries(screens) {
 }
 
 // Per-screen summaries for the section-meta synthesis on a Functional Analysis
-// board. Mirrors osCollectSectionDescribeSummaries, but reads the Functional
-// Card instead of the Card Description — Functional boards never fill the Card
-// Description, so that node is empty here. Mode-aware: Advanced cards return
-// their long-form document; Basic cards return the filled section fields joined
-// as "label: value" lines. The text is capped so a multi-screen section stays
-// within the section-meta call's token budget; a prefix is plenty to synthesize
-// an Overview Header title + description. Placeholders and empty fields are
-// skipped. Lets the documentation run fill Section Title / Section Description
-// the same way the Describe action does for Design Review boards.
+// board. Mirrors osCollectSectionDescribeSummaries, but reads the full markdown
+// report stored on each Functional Card frame (sharedPluginData) instead of the
+// Card Description — Functional boards never fill the Card Description, so that
+// node is empty here. The text is capped so a multi-screen section stays within
+// the section-meta call's token budget; a prefix is plenty to synthesize an
+// Overview Header title + description. Cards with no stored report are skipped.
+// Lets the documentation run fill Section Title / Section Description the same
+// way the Describe action does for Design Review boards.
 async function osCollectSectionFunctionalSummaries(screens) {
   const out = [];
   if (!Array.isArray(screens)) return out;
@@ -7264,40 +7222,17 @@ async function osCollectSectionFunctionalSummaries(screens) {
     if (!card || card.removed) continue;
     const funcCard = osCardFunctionalCard(card);
     if (!funcCard) continue;
-    const fieldNodes = osIndexFuncFieldNodes(funcCard);
 
     let text = "";
-    if (osFunctionalCardMode(funcCard) === "advanced") {
-      const docNode = osResolveFuncFieldNode(
-        funcCard,
-        fieldNodes,
-        OS_FUNCTIONAL_DOC_KEY
+    try {
+      text = funcCard.getSharedPluginData(
+        OS_REVIEW_NAMESPACE,
+        OS_FUNC_MARKDOWN_DATA_KEY
       );
-      if (docNode && docNode.type === "TEXT") {
-        const docText =
-          typeof docNode.characters === "string"
-            ? docNode.characters.trim()
-            : "";
-        if (docText && docText !== OS_FUNCTIONAL_PLACEHOLDERS[OS_FUNCTIONAL_DOC_KEY]) {
-          text = docText;
-        }
-      }
-    } else {
-      // Basic: join the filled section fields as "label: value" lines so the
-      // synthesis has structured per-screen context (the 8 functional fields).
-      const parts = [];
-      for (let k = 0; k < OS_FUNCTIONAL_SECTION_KEYS.length; k++) {
-        const key = OS_FUNCTIONAL_SECTION_KEYS[k];
-        const node = osResolveFuncFieldNode(funcCard, fieldNodes, key);
-        if (!node || node.type !== "TEXT") continue;
-        const val =
-          typeof node.characters === "string" ? node.characters.trim() : "";
-        if (!val || val === OS_FUNCTIONAL_PLACEHOLDERS[key]) continue;
-        const label = OS_FUNCTIONAL_FIELD_LABELS[key] || key;
-        parts.push(label + ": " + val);
-      }
-      text = parts.join("\n");
+    } catch (e) {
+      text = "";
     }
+    text = typeof text === "string" ? text.trim() : "";
 
     if (!text) continue;
     if (text.length > MAX_DOC_CHARS) text = text.slice(0, MAX_DOC_CHARS);
@@ -7671,25 +7606,12 @@ function osResolveEditBoardSettings(container, metadataSettings) {
       boardType = "design-review";
     }
   }
-  // Functional mode: prefer the stored metadata; fall back to the board's
-  // actual structure (so the sub-select reflects an Advanced board even when
-  // metadata is stale/missing); default basic.
-  let functionalMode =
-    base.functional && base.functional.mode === "advanced"
-      ? "advanced"
-      : base.functional && base.functional.mode === "basic"
-      ? "basic"
-      : null;
-  if (!functionalMode) {
-    functionalMode = osBoardFunctionalMode(container) || "basic";
-  }
   return {
     boardType: boardType,
     orientation: base.orientation,
     annotations: base.annotations,
     flow: base.flow === true,
     review: osNormalizeReviewSettings(base.review, boardType),
-    functional: osNormalizeFunctionalSettings({ mode: functionalMode }, boardType),
   };
 }
 
@@ -8096,7 +8018,6 @@ async function organizeScreensFromSelection(params) {
     sectionTitle: sectionTitle,
     sectionDescription: sectionDescription,
     cardCopyOverrides: null,
-    functionalMode: params.functionalMode === "advanced" ? "advanced" : "basic",
     flow: params.flow === true,
     origin: origin,
   });

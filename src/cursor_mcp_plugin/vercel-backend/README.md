@@ -19,14 +19,14 @@ Request body (from the plugin):
   "mimeType": "image/png",
   "systemContext": "<design-review reviewer instructions>",
   "instruction": "<user message + optional screen metadata>",
-  "model": "gpt-4o"          // optional; falls back to BONZAI_DEFAULT_MODEL
+  "model": "claude-sonnet-4-6" // optional; falls back to BONZAI_DEFAULT_MODEL
 }
 ```
 
 Response:
 
 ```jsonc
-{ "ok": true,  "data": { "content": "<json string>", "model": "gpt-4o", "usage": { } } }
+{ "ok": true,  "data": { "content": "<json string>", "model": "claude-sonnet-4-6", "usage": { } } }
 { "ok": false, "error": "<redacted message>" }
 ```
 
@@ -39,7 +39,7 @@ The plugin validates `data.content` against the v1 schema in
 |---|---|---|
 | `BONZAI_API_KEY` | yes | Bonzai authentication (kept server-side) |
 | `BONZAI_BASE_URL` | yes | e.g. `https://api-v2.bonzai.iodigital.com` |
-| `BONZAI_DEFAULT_MODEL` | no | vision-capable default (e.g. `gpt-4o`) |
+| `BONZAI_DEFAULT_MODEL` | no | overrides the hardcoded vision-capable default (`claude-sonnet-4-6`); empty/unset is ignored |
 | `BONZAI_SYSTEM_PROMPT` | no | overrides `bonzai-system-prompt.txt` |
 | `PLUGIN_SECRET` | no | when set, requires the `X-Plugin-Token` header |
 

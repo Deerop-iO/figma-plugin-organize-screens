@@ -16,6 +16,16 @@ The decomposition in [`CHANGELOG`](CHANGELOG.md) (Unreleased / Changed) split `c
 - Handler parameter shapes match the Zod schemas; the dispatcher's `MCPHandlers` interface uses those shapes instead of `any`.
 - `tsc --noEmit` keeps passing.
 
+### Type the runtime <-> engine boundary
+
+`runtime/analyze-design.ts`, `code.ts`, and the generated `engine-inline.ts` all carry `@ts-nocheck`, so the contract between the engine and its runtime consumers is unchecked. Engine-export drift is invisible to the compiler — e.g. the recently added `staleStructure` field on `osApplyFunctionalAnalysis`'s return is untyped at the call site, and a rename or shape change in any `os*` export would compile cleanly while breaking at runtime.
+
+**Acceptance (draft):**
+
+- A typed declaration (`.d.ts`) describes the `engine-inline` exports that `runtime/analyze-design.ts` imports (`osApplyFunctionalAnalysis`, `osCollectFunctionalDocuments`, `osResolveCreateDocumentationTarget`, `osBuildFunctionalJourneyContext`, the design-review and section-meta helpers, etc.) with their real argument/return shapes.
+- `@ts-nocheck` removed from `runtime/analyze-design.ts`; only the errors that surface there are fixed (scope it to this one module first).
+- `tsc --noEmit` keeps passing; `code.ts` and `engine-inline.ts` can stay `@ts-nocheck` for a later pass.
+
 ---
 
 ## Ideas (not yet scoped)

@@ -22,264 +22,67 @@ import {
   type AnalysisContext,
 } from "./designReview";
 
-export const FUNCTIONAL_ANALYSIS_MODE = "functionalAnalysis";
-export const FUNCTIONAL_ANALYSIS_VERSION = 1;
-
-/**
- * Max lines retained per section. Slightly higher than the design-review clamp
- * because flattened sections (States, Inputs/Outputs) legitimately need ~5
- * labelled lines (loading / empty / success / error / edge). Kept bounded so an
- * 8-section doc stays inside the backend token budget and the card stays
- * scannable.
- */
-export const MAX_LINES_PER_FUNCTIONAL_FIELD = 6;
-
-/** Ordered functional section keys (mirror engine OS_FUNCTIONAL_SECTION_KEYS). */
-export const FUNCTIONAL_SECTION_KEYS = [
-  "purpose",
-  "userActions",
-  "systemBehavior",
-  "inputOutput",
-  "states",
-  "businessRules",
-  "missingFunctionality",
-  "openQuestions",
-] as const;
-
-export type FunctionalSectionKey = (typeof FUNCTIONAL_SECTION_KEYS)[number];
-
-export interface FunctionalAnalysisV1 {
-  purpose: string[];
-  userActions: string[];
-  systemBehavior: string[];
-  inputOutput: string[];
-  states: string[];
-  businessRules: string[];
-  missingFunctionality: string[];
-  openQuestions: string[];
-  meta?: {
-    confidence?: "low" | "medium" | "high";
-    skippedReason?: string;
-  };
-}
-
-export const FUNCTIONAL_FIELD_LABELS: Record<string, string> = {
-  purpose: "Screen Purpose",
-  userActions: "User Actions",
-  systemBehavior: "System Behavior",
-  inputOutput: "Inputs / Outputs",
-  states: "States",
-  businessRules: "Business Rules",
-  missingFunctionality: "Missing Functionality",
-  openQuestions: "Open Questions",
-};
-
-export type FunctionalValidationResult =
-  | { ok: true; value: FunctionalAnalysisV1 }
-  | { ok: false; error: string; skippedReason?: string };
-
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function asLineList(value: unknown): string[] {
+/** Max bullets retained per summary list field (keeps the canvas scannable). */
+export const MAX_SUMMARY_BULLETS = 8;
+
+function asSummaryList(value: unknown): string[] {
   if (!Array.isArray(value)) {
-    // Tolerate a single string (model occasionally returns one block) by
-    // splitting on newlines.
     const single = asString(value);
     if (!single) return [];
     return single
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean)
-      .slice(0, MAX_LINES_PER_FUNCTIONAL_FIELD);
+      .slice(0, MAX_SUMMARY_BULLETS);
   }
   const out: string[] = [];
   for (const item of value) {
     const s = asString(item);
     if (s) out.push(s);
-    if (out.length >= MAX_LINES_PER_FUNCTIONAL_FIELD) break;
+    if (out.length >= MAX_SUMMARY_BULLETS) break;
   }
   return out;
 }
 
-/**
- * Validate + coerce raw model output (JSON string or parsed object) into a
- * `FunctionalAnalysisV1`. Fence-tolerant (reuses `parseModelJsonContent`), drops
- * empties, clamps lists, and short-circuits on a declared `skippedReason` so the
- * caller writes nothing. Mirrors `validateDesignReviewAnalysis`.
- */
-export function validateFunctionalAnalysis(
-  raw: unknown
-): FunctionalValidationResult {
-  let parsed: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      parsed = parseModelJsonContent(raw);
-    } catch (e) {
-      return { ok: false, error: "Response was not valid JSON." };
-    }
-  }
-  if (!parsed || typeof parsed !== "object") {
-    return { ok: false, error: "Response was not a JSON object." };
-  }
-
-  const obj = parsed as Record<string, unknown>;
-
-  const meta =
-    obj.meta && typeof obj.meta === "object"
-      ? (obj.meta as Record<string, unknown>)
-      : undefined;
-  const skippedReason = meta ? asString(meta.skippedReason) : "";
-  if (skippedReason) {
-    return { ok: false, error: "Model declined to document.", skippedReason };
-  }
-
-  const value: FunctionalAnalysisV1 = {
-    purpose: asLineList(obj.purpose),
-    userActions: asLineList(obj.userActions),
-    systemBehavior: asLineList(obj.systemBehavior),
-    inputOutput: asLineList(obj.inputOutput),
-    states: asLineList(obj.states),
-    businessRules: asLineList(obj.businessRules),
-    missingFunctionality: asLineList(obj.missingFunctionality),
-    openQuestions: asLineList(obj.openQuestions),
-  };
-
-  let hasAnything = false;
-  for (let i = 0; i < FUNCTIONAL_SECTION_KEYS.length; i++) {
-    if (value[FUNCTIONAL_SECTION_KEYS[i]].length > 0) {
-      hasAnything = true;
-      break;
-    }
-  }
-  if (!hasAnything) {
-    return { ok: false, error: "Documentation came back empty." };
-  }
-
-  if (meta) {
-    const confidence = asString(meta.confidence);
-    if (
-      confidence === "low" ||
-      confidence === "medium" ||
-      confidence === "high"
-    ) {
-      value.meta = { confidence };
-    }
-  }
-
-  return { ok: true, value };
-}
-
-const SYSTEM_CONTEXT = [
-  "You are a senior product/systems analyst documenting the functionality of a single screen for a workshop-style functional review.",
-  "You are given a screenshot of one screen/frame from a Figma board.",
-  "",
-  "Rules:",
-  "- Document FUNCTIONALITY, not visual style: what the screen does, how it behaves, and what is missing.",
-  "- Base every statement on what is visible in the screenshot plus the provided context. Do not invent business logic you cannot infer.",
-  "- Prefer short, scannable bullet lines (a few words to one sentence each). No prose paragraphs, no marketing language.",
-  "- When a behavior is inferred rather than certain, prefix the line with \"(assumption)\".",
-  "- Prefer adding an item to openQuestions over inventing an answer.",
-  "- For nested concepts, emit labelled lines inside the same list:",
-  '  - inputOutput: lines like "Inputs: …" and "Outputs: …".',
-  '  - states: lines like "Loading: …", "Empty: …", "Success: …", "Error: …", "Edge: …".',
-  "",
-  "Return ONLY a JSON object with this exact shape (no markdown, no prose outside the JSON):",
-  "{",
-  '  "purpose": string[],                 // what this screen is for',
-  '  "userActions": string[],             // actions a user can take',
-  '  "systemBehavior": string[],          // how the system responds',
-  '  "inputOutput": string[],             // labelled "Inputs: …" / "Outputs: …" lines',
-  '  "states": string[],                  // labelled loading/empty/success/error/edge lines',
-  '  "businessRules": string[],           // rules, constraints, validations',
-  '  "missingFunctionality": string[],    // gaps or unfinished behavior',
-  '  "openQuestions": string[],           // assumptions and unresolved questions',
-  '  "meta": { "confidence": "low" | "medium" | "high", "skippedReason": string }',
-  "}",
-  "Keep at most 6 lines per list.",
-  "If the screenshot is unreadable or not a UI screen, set meta.skippedReason explaining why and leave the section lists empty.",
-];
-
-export function buildFunctionalSystemContext(_scope?: AnalysisScope): string {
-  return SYSTEM_CONTEXT.join("\n");
-}
-
-export function buildFunctionalInstruction(
-  _scope?: AnalysisScope,
-  ctx?: AnalysisContext
-): string {
-  const lines: string[] = [
-    "Document the attached screen and produce the JSON described in the system instructions.",
-  ];
-  if (ctx) {
-    const meta: string[] = [];
-    if (ctx.frameName) meta.push('Frame name: "' + ctx.frameName + '"');
-    if (ctx.cardTitle) meta.push('Card title: "' + ctx.cardTitle + '"');
-    if (ctx.existingDescription) {
-      meta.push('Existing description (for context): "' + ctx.existingDescription + '"');
-    }
-    if (meta.length) {
-      lines.push("");
-      lines.push("Context (may be incomplete; trust the image first):");
-      for (const m of meta) lines.push("- " + m);
-    }
-  }
-  return lines.join("\n");
-}
-
-export const functionalMode: AnalysisMode<FunctionalAnalysisV1> = {
-  id: FUNCTIONAL_ANALYSIS_MODE,
-  version: FUNCTIONAL_ANALYSIS_VERSION,
-  buildSystemContext: buildFunctionalSystemContext,
-  buildInstruction: buildFunctionalInstruction,
-  validate: validateFunctionalAnalysis,
-  // Section keys map 1:1 to the engine's osFuncField tag keys.
-  fieldMap: {
-    purpose: "purpose",
-    userActions: "userActions",
-    systemBehavior: "systemBehavior",
-    inputOutput: "inputOutput",
-    states: "states",
-    businessRules: "businessRules",
-    missingFunctionality: "missingFunctionality",
-    openQuestions: "openQuestions",
-  },
-};
-
-// Self-register so ANALYSIS_MODES carries this mode once this module is loaded,
-// without creating a circular import back into designReview.ts.
-registerAnalysisMode(functionalMode as unknown as AnalysisMode<unknown>);
-
 // ---------------------------------------------------------------------------
-// Advanced functional analysis (single-document mode).
+// Functional analysis — Pass 1 (full long-form report).
 //
-// The "Advanced" Functional Analysis mode produces ONE long-form markdown
-// report instead of the 8 structured fields. Because the Bonzai backend pins
-// `response_format: json_object`, the markdown cannot be returned as raw fenced
-// text — it is wrapped in a JSON string field (`{ document, meta }`). The
-// engine renders that single string into one editable `functionalDoc` TEXT
-// node on the Functional Card.
+// The single unified Functional Analysis method runs two passes. Pass 1 is this
+// vision call: it produces ONE long-form markdown report, returned as RAW
+// markdown (the backend uses text mode, not `response_format: json_object`,
+// because escaping a big report into one JSON string makes models emit
+// invalid/truncated JSON). The report is stored verbatim on the Functional Card
+// frame for the `.md` export. Pass 2 (`functionalSummaryMode`, below) condenses
+// that report into the fixed 5-field summary rendered on the canvas.
 //
 // The persona / source-handling / output-structure / writing-style / quality
 // checklist below are an embedded copy of the readable source prompt at
 // `FUNCTIONAL_ANALYST_PROMPT.md` (kept in sync by hand). Only the OUTPUT FORMAT
-// section is rewritten here to demand the JSON-wrapped markdown.
+// section is rewritten here to demand raw markdown.
 // ---------------------------------------------------------------------------
 
 export const FUNCTIONAL_ANALYSIS_ADVANCED_MODE = "functionalAnalysisAdvanced";
 export const FUNCTIONAL_ANALYSIS_ADVANCED_VERSION = 2;
 
-/** Single editable doc node key on the Functional Card (Advanced mode). */
+/** In-memory key for the full report string (mirrors the engine serialization key). */
 export const FUNCTIONAL_DOC_KEY = "functionalDoc";
 
 /**
- * Upper bound on the rendered markdown report. A single JSON string that grows
- * unbounded can blow the backend token ceiling or produce a TEXT node too large
- * to scan. The prompt also asks the model to stay well under this; the clamp is
- * the last-line defense so a runaway response is truncated rather than rejected.
+ * Upper bound on the rendered markdown report. The clamp is the last-line
+ * defense so a runaway response is truncated rather than rejected; the prompt
+ * asks the model to stay well under it.
+ *
+ * Consistency rule: this char clamp MUST stay below the output token budget
+ * expressed as characters (`FUNCTIONAL_ADVANCED_MAX_TOKENS * ~4`), so the model
+ * finishes its report naturally and the clamp never severs an otherwise-complete
+ * response mid-sentence. At 16000 output tokens that ceiling is ~64000 chars, so
+ * 32000 leaves comfortable headroom while still bounding a TEXT node's size.
  */
-export const MAX_DOCUMENT_CHARS = 8000;
+export const MAX_DOCUMENT_CHARS = 32000;
 
 export interface FunctionalAnalysisAdvancedV2 {
   document: string;
@@ -510,7 +313,7 @@ const ADVANCED_OUTPUT_INSTRUCTIONS = [
   "",
   "Rules:",
   "- Start directly with the first markdown heading (e.g. \"## Analysis Setup\").",
-  "- Keep the report focused and well under ~8000 characters: prefer short sections and compact tables; omit empty sections instead of padding them.",
+  "- Be thorough and complete: cover every applicable section fully rather than cutting the report short. Prefer compact tables and short paragraphs, and omit empty sections instead of padding them, but do not sacrifice completeness for brevity. Aim for a complete report (roughly up to ~6000 words when the screen warrants it); never stop mid-section.",
   '- If the screenshot is unreadable or is not a UI screen, output a single line starting with "SKIP:" followed by a short reason, and nothing else.',
 ].join("\n");
 
@@ -584,3 +387,108 @@ export const functionalAdvancedMode: AnalysisMode<FunctionalAnalysisAdvancedV2> 
 };
 
 registerAnalysisMode(functionalAdvancedMode as unknown as AnalysisMode<unknown>);
+
+// ---------------------------------------------------------------------------
+// Functional analysis — Pass 2 (canvas summary).
+//
+// A text-only call that condenses the Pass 1 markdown report into the fixed
+// five-field summary rendered on the Functional Card: a prose `overview` plus
+// four bulleted lists. "Analysis Setup" and "Element Inventory" are deliberately
+// excluded from the canvas summary (they stay in the downloadable report).
+// Returns JSON (the backend pins `response_format: json_object` for this call),
+// with a modest token budget since the input is already-structured prose.
+// ---------------------------------------------------------------------------
+
+export interface FunctionalSummaryV1 {
+  overview: string;
+  relatedScreens: string[];
+  businessSummary: string[];
+  workflows: string[];
+  functionalRequirements: string[];
+  confidence?: "low" | "medium" | "high";
+}
+
+export type FunctionalSummaryValidationResult =
+  | { ok: true; value: FunctionalSummaryV1 }
+  | { ok: false; error: string; skippedReason?: string };
+
+/**
+ * Validate + coerce the Pass 2 model output (JSON string or parsed object) into
+ * a `FunctionalSummaryV1`. Fence-tolerant, drops empties, clamps lists. A summary
+ * with no usable content fails so the caller can degrade gracefully.
+ */
+export function validateFunctionalSummary(
+  raw: unknown
+): FunctionalSummaryValidationResult {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = parseModelJsonContent(raw);
+    } catch (e) {
+      return { ok: false, error: "Summary was not valid JSON." };
+    }
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { ok: false, error: "Summary was not a JSON object." };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const value: FunctionalSummaryV1 = {
+    overview: asString(obj.overview),
+    relatedScreens: asSummaryList(obj.relatedScreens),
+    businessSummary: asSummaryList(obj.businessSummary),
+    workflows: asSummaryList(obj.workflows),
+    functionalRequirements: asSummaryList(obj.functionalRequirements),
+  };
+
+  const hasAnything =
+    !!value.overview ||
+    value.relatedScreens.length > 0 ||
+    value.businessSummary.length > 0 ||
+    value.workflows.length > 0 ||
+    value.functionalRequirements.length > 0;
+  if (!hasAnything) {
+    return { ok: false, error: "Summary came back empty." };
+  }
+
+  const confidence = asString(obj.confidence);
+  if (confidence === "low" || confidence === "medium" || confidence === "high") {
+    value.confidence = confidence;
+  }
+
+  return { ok: true, value };
+}
+
+const SUMMARY_SYSTEM_CONTEXT = [
+  "You condense a long-form functional analysis report into a short, structured summary for display on a board card.",
+  "You are given the full markdown report for ONE screen. Summarize it; do not invent anything not present in the report.",
+  "",
+  "Return ONLY a JSON object with this exact shape (no markdown, no prose outside the JSON):",
+  "{",
+  '  "overview": string,                    // 1-3 sentence plain-prose summary of what the screen is and its purpose',
+  '  "relatedScreens": string[],            // concise bullets on how this screen connects to other screens / the flow (empty if none)',
+  '  "businessSummary": string[],           // concise bullets: what it does, what it enables, scope, dependencies, key assumptions',
+  '  "workflows": string[],                 // concise bullets, one per inferable user workflow',
+  '  "functionalRequirements": string[],    // concise bullets, one per key functional requirement',
+  '  "confidence": "low" | "medium" | "high" // optional overall confidence',
+  "}",
+  "",
+  "Rules:",
+  "- `overview` is plain prose (no bullet markers).",
+  "- The four list fields are short bullet lines (a few words to one sentence each), at most 8 per list.",
+  "- Do NOT include an Analysis Setup section or an Element Inventory in the summary.",
+  "- Preserve the report's own assumptions/uncertainty markers where relevant.",
+].join("\n");
+
+export function buildFunctionalSummarySystemContext(): string {
+  return SUMMARY_SYSTEM_CONTEXT;
+}
+
+export function buildFunctionalSummaryInstruction(markdown: string): string {
+  return [
+    "Summarize the following functional analysis report into the JSON described in the system instructions.",
+    "",
+    "REPORT:",
+    markdown,
+  ].join("\n");
+}

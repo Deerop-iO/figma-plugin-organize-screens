@@ -46,7 +46,7 @@ export interface AnalyzeDesignBackendRequest {
   /**
    * Optional token ceiling. The backend clamps it to a safe band and defaults
    * to 1200 when omitted. Used by the functional documentation mode, whose
-   * 8-section output can otherwise truncate at the default.
+   * long-form markdown report can otherwise truncate at the default.
    */
   max_tokens?: number;
   /**

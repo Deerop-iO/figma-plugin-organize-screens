@@ -60,7 +60,7 @@ export interface AnalysisContext {
   cardTitle?: string;
   existingDescription?: string;
   /**
-   * Cross-screen "journey" context (Advanced functional analysis only). The
+   * Cross-screen "journey" context (functional analysis only). The
    * ordered set of functional screens in the same run, the directed Flow
    * connections between them, and the cardId of the screen being documented so
    * the prompt can mark it unambiguously. Other modes ignore these.

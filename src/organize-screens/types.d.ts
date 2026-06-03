@@ -139,14 +139,11 @@ export interface ReviewCardConfig {
 
 /** Identifies an editable section TEXT node inside a Functional Card. */
 export type FunctionalSectionKey =
-  | "purpose"
-  | "userActions"
-  | "systemBehavior"
-  | "inputOutput"
-  | "states"
-  | "businessRules"
-  | "missingFunctionality"
-  | "openQuestions";
+  | "overview"
+  | "relatedScreens"
+  | "businessSummary"
+  | "workflows"
+  | "functionalRequirements";
 
 /**
  * Per-card functional documentation surface configuration. Present only on

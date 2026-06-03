@@ -88,10 +88,14 @@ export default async function handler(
       typeof body.systemContext === "string" ? body.systemContext : "";
     const instruction =
       typeof body.instruction === "string" ? body.instruction : "";
+    // Model resolution: explicit per-request model wins, then the
+    // BONZAI_DEFAULT_MODEL env var (only when non-empty), then a hardcoded
+    // vision-capable default. The hardcoded default is the source of truth so an
+    // empty/unset env var can never silently fall back to a different model.
     const model =
       (typeof body.model === "string" && body.model) ||
-      process.env.BONZAI_DEFAULT_MODEL ||
-      "gpt-4o";
+      (process.env.BONZAI_DEFAULT_MODEL || "").trim() ||
+      "claude-sonnet-4-6";
     // Output mode. Default "json" preserves every existing caller (Design
     // Review, Basic functional, section summary), which consume structured
     // JSON. "text" is for single long-form outputs (Advanced functional doc):
@@ -101,16 +105,15 @@ export default async function handler(
     const responseFormat = body.responseFormat === "text" ? "text" : "json";
 
     // Optional, clamped token ceiling. Design Review keeps the 1200 default;
-    // the Functional Analysis "Create Documentation" modes request more because
-    // an 8-section functional doc (Basic) or a long-form single-document report
-    // (Advanced) can otherwise truncate. Clamp to a sane band so a bad client
-    // value cannot blow up token spend.
+    // Functional Analysis "Create Documentation" requests more because the
+    // long-form single-document report can otherwise truncate. Clamp to a sane
+    // band so a bad client value cannot blow up token spend.
     const DEFAULT_MAX_TOKENS = 1200;
-    // The Advanced functional report is a long-form markdown document wrapped in
-    // a single JSON string; too low a ceiling truncates the JSON mid-string and
-    // the plugin can no longer parse it (the screen is silently skipped). Keep
-    // generous headroom while still bounding worst-case token spend.
-    const MAX_TOKENS_CEILING = 8000;
+    // The functional report is a long-form markdown document; too low a ceiling
+    // truncates it mid-sentence. Keep generous headroom (well within the default
+    // model's practical output cap) while still bounding worst-case token spend.
+    // Must stay in step with the client's FUNCTIONAL_ADVANCED_MAX_TOKENS.
+    const MAX_TOKENS_CEILING = 16000;
     const requestedMaxTokens =
       typeof body.max_tokens === "number" && isFinite(body.max_tokens)
         ? Math.floor(body.max_tokens)
