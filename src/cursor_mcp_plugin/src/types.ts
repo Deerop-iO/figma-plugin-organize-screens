@@ -67,6 +67,13 @@ export interface OrganizeScreensParams {
   flowFrameIds?: string[] | null;
   /** In-place flow: draw arrows between selected screens / section children. */
   flowInPlace?: boolean;
+  /**
+   * Functional Analysis card structure. `basic` (default) renders the 8
+   * structured fields; `advanced` renders a single long-form documentation
+   * field. Only meaningful on `functional-analysis` boards. Switching modes
+   * does not preserve content (the structures share no field keys).
+   */
+  functionalMode?: "basic" | "advanced";
 }
 
 /** A variant group proposed by the runtime for a compose selection. */
@@ -136,6 +143,11 @@ export interface AnalyzeDesignEligibility {
   /** Review framework — v1 supports the standard single-screen review only. */
   frameworkId?: "standard";
   boardType?: BoardType;
+  /**
+   * Functional Analysis mode of the eligible board (functional surface only).
+   * Lets the UI gate Advanced-only actions such as documentation export.
+   */
+  mode?: "basic" | "advanced";
   /** True when the card already has review text or a Card Description (UI hint). */
   hasExistingContent?: boolean;
 }
@@ -195,6 +207,14 @@ export type OrganizeScreensSelectionContext = (
             status: boolean;
             sections: Array<"workingWell" | "questions" | "concerns" | "ideas">;
             notes: boolean;
+          };
+          /**
+           * Functional-card settings (present on functional-analysis boards).
+           * `mode` selects the Basic 8-field structure or the Advanced
+           * single-document structure.
+           */
+          functional?: {
+            mode: "basic" | "advanced";
           };
         };
         layout: {
@@ -331,6 +351,12 @@ export type UiToPluginMessage =
       // default placeholder text. No network call. One card or the section.
       type: "reset-documentation";
       target: "card" | "section";
+    }
+  | {
+      // Export Advanced functional documentation. The runtime gathers the
+      // markdown from the selected cards (or the whole board) and posts it back
+      // for the UI to zip + download. No network call.
+      type: "export-documentation";
     };
 
 export type PluginToUiMessage =
@@ -383,9 +409,22 @@ export type PluginToUiMessage =
       cardName?: string;
       /** Total screens processed (section target). */
       screenCount?: number;
+      /**
+       * Optional human-readable reason shown when screens were skipped, so a
+       * section run never reports an empty result without explaining why.
+       */
+      note?: string;
     }
   | {
       // Always redacted before it reaches the UI (no raw upstream bodies).
       type: "analyze-design-error";
       message: string;
+    }
+  | {
+      // Advanced functional documentation export. `files` carries one markdown
+      // document per screen; the UI builds the zip and triggers the download.
+      // An empty `files` array means there was nothing to export.
+      type: "export-documentation-result";
+      files: Array<{ name: string; content: string }>;
+      zipName: string;
     };

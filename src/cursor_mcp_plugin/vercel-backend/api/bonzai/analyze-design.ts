@@ -92,13 +92,25 @@ export default async function handler(
       (typeof body.model === "string" && body.model) ||
       process.env.BONZAI_DEFAULT_MODEL ||
       "gpt-4o";
+    // Output mode. Default "json" preserves every existing caller (Design
+    // Review, Basic functional, section summary), which consume structured
+    // JSON. "text" is for single long-form outputs (Advanced functional doc):
+    // forcing a big markdown report into one JSON string makes the model emit
+    // invalid JSON (unescaped newlines/quotes) or truncate unparseably, so we
+    // skip response_format and take the raw markdown instead.
+    const responseFormat = body.responseFormat === "text" ? "text" : "json";
 
     // Optional, clamped token ceiling. Design Review keeps the 1200 default;
-    // the Functional Analysis "Create Documentation" mode requests more because
-    // an 8-section functional doc can otherwise truncate. Clamp to a sane band
-    // so a bad client value cannot blow up token spend.
+    // the Functional Analysis "Create Documentation" modes request more because
+    // an 8-section functional doc (Basic) or a long-form single-document report
+    // (Advanced) can otherwise truncate. Clamp to a sane band so a bad client
+    // value cannot blow up token spend.
     const DEFAULT_MAX_TOKENS = 1200;
-    const MAX_TOKENS_CEILING = 2500;
+    // The Advanced functional report is a long-form markdown document wrapped in
+    // a single JSON string; too low a ceiling truncates the JSON mid-string and
+    // the plugin can no longer parse it (the screen is silently skipped). Keep
+    // generous headroom while still bounding worst-case token spend.
+    const MAX_TOKENS_CEILING = 8000;
     const requestedMaxTokens =
       typeof body.max_tokens === "number" && isFinite(body.max_tokens)
         ? Math.floor(body.max_tokens)
@@ -130,16 +142,24 @@ export default async function handler(
           },
         ]
       : [{ type: "text", text: instruction }];
-    const payload = {
+    const payload: {
+      model: string;
+      messages: Array<{ role: string; content: unknown }>;
+      temperature: number;
+      max_tokens: number;
+      response_format?: { type: "json_object" };
+    } = {
       model,
       messages: [
         { role: "system", content: systemContent },
         { role: "user", content: userContent },
       ],
-      response_format: { type: "json_object" },
       temperature: 0.2,
       max_tokens: maxTokens,
     };
+    if (responseFormat === "json") {
+      payload.response_format = { type: "json_object" };
+    }
 
     const endpoint = baseUrl.replace(/\/$/, "") + "/v1/chat/completions";
     const upstream = await fetch(endpoint, {
@@ -185,7 +205,10 @@ export default async function handler(
     res.status(200).json({
       ok: true,
       data: {
-        content: normalizeModelJsonContent(content),
+        // Text mode returns the raw model output (markdown); JSON mode is
+        // fence-normalized so the plugin's parser sees clean JSON.
+        content:
+          responseFormat === "text" ? content : normalizeModelJsonContent(content),
         model: (json && json.model) || model,
         usage: json && json.usage,
       },

@@ -44,6 +44,22 @@ Questions are preferred over unsupported assumptions.
 
 ---
 
+# MULTI-SCREEN / JOURNEY AWARENESS
+
+This screen is usually documented as one of a set of screens from a single connected user journey. When other screens are provided, the user message lists them by name and order, plus any known flow connections between them. Treat the set as a connected journey, not isolated artifacts.
+
+When other screens are provided in the set:
+
+- Determine which actions on this screen lead to another screen in the set, and name that screen.
+- Infer the intended user flow and reference preceding and subsequent screens by name.
+- Document assumptions about navigation paths, state changes, and data passed between screens.
+- Do NOT report a flow or downstream screen as unavailable when a matching screen exists in the provided set; describe the complete flow instead.
+- Only report a flow as unavailable when no corresponding screen can be identified in the provided set.
+
+You are given only the NAMES and connections of the other screens, not their pixels. Reference them by name, but mark any cross-screen behavior you cannot directly see as an assumption or open question rather than stating it as fact.
+
+---
+
 # EXCLUDE TECHNICAL AND VISUAL DESIGN DETAILS
 
 Do not include:
@@ -85,7 +101,7 @@ Briefly state:
 - **Subject analyzed:** screen, component, workflow, feature, entity, investigation, or comparison
 - **Main analysis focus:** UI elements, workflows, business rules, functional requirements, or open questions
 - **Expected requirement areas:** short numbered list of the functional requirement areas covered
-- **Known limitations:** any missing context or uncertainty in the provided source
+- **Known limitations:** any missing context or uncertainty in the provided source. Do not list "downstream screens unavailable" (or similar) for any screen present in the provided set.
 
 Do not ask the user for confirmation. Continue directly into the functional analysis.
 
@@ -102,6 +118,16 @@ Use the following structure.
 ## Overview
 
 1-3 sentences describing what the screen or feature is, its core purpose, and where it appears to sit in the user journey.
+
+## Related Screens & Flow Context
+
+Include only when other screens are provided in the set; otherwise omit this section. Capture how this screen connects to the rest of the journey:
+
+- **Previous screen(s):** which screen(s) in the set lead here, if any.
+- **Next screen(s):** which screen(s) this one leads to, if any.
+- **Trigger:** the action or condition that causes the transition.
+- **Data transferred:** information likely passed between screens (mark as an assumption when not visible).
+- **Assumptions:** navigation, state, and data assumptions made about these connections.
 
 ## Business Summary
 

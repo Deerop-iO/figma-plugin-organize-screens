@@ -8,7 +8,20 @@ import type {
   VariantGroupProposal,
 } from "../types";
 import { inlineConfirm } from "../lib/inlineConfirm";
+import { createZipStore } from "../lib/zip";
 import type { SkillContext, SkillDef, SkillInstance } from "./registry";
+
+// Filesystem-safe name: collapse path separators and reserved characters to a
+// single dash, trim, and cap length so the browser download never chokes.
+function sanitizeFileBase(name: string, fallback: string): string {
+  const cleaned = (name || "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s-]+|[.\s-]+$/g, "")
+    .slice(0, 80)
+    .trim();
+  return cleaned || fallback;
+}
 
 // Board Types are the primary system. `custom` is the calibrated baseline;
 // `design-review` reuses the same layout and adds an editable Review Card to
@@ -38,6 +51,28 @@ const BOARD_TYPE_OPTIONS: ReadonlyArray<{
 ];
 
 type AnnotationsMode = "off" | "compact" | "expanded";
+
+type FunctionalMode = "basic" | "advanced";
+
+// Functional Analysis card structure. Shown only when the board type is
+// functional-analysis. Switching modes rebuilds the Functional Card and does
+// not preserve content (the two structures share no field keys).
+const FUNCTIONAL_MODE_OPTIONS: ReadonlyArray<{
+  value: FunctionalMode;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "basic",
+    label: "Basic (8 fields)",
+    hint: "Eight structured fields (Purpose, User Actions, System Behavior, Inputs/Outputs, States, Business Rules, Missing Functionality, Open Questions).",
+  },
+  {
+    value: "advanced",
+    label: "Advanced (single document)",
+    hint: "One long-form documentation field filled by the Functional Analyst prompt (overview, requirements, states, risks, open questions).",
+  },
+];
 
 type OrientationChoice = "default" | "row" | "column" | "grid";
 
@@ -144,6 +179,37 @@ function renderOrganizeScreens(
   boardTypeSection.appendChild(boardTypeStatusHint);
 
   panel.appendChild(boardTypeSection);
+
+  // ----- Functional Analysis mode (Basic / Advanced) -----
+  // Sub-select shown only when the board type is functional-analysis.
+  const functionalModeSection = document.createElement("section");
+  functionalModeSection.className = "panel-section";
+  functionalModeSection.hidden = true;
+
+  const functionalModeLabel = document.createElement("label");
+  functionalModeLabel.className = "field-label";
+  functionalModeLabel.htmlFor = "organize-functional-mode";
+  functionalModeLabel.textContent = "Functional Analysis mode";
+  functionalModeSection.appendChild(functionalModeLabel);
+
+  const functionalModeSelect = document.createElement("select");
+  functionalModeSelect.id = "organize-functional-mode";
+  functionalModeSelect.className = "select";
+  for (const option of FUNCTIONAL_MODE_OPTIONS) {
+    const opt = document.createElement("option");
+    opt.value = option.value;
+    opt.textContent = option.label;
+    functionalModeSelect.appendChild(opt);
+  }
+  functionalModeSelect.value = "basic";
+  functionalModeSection.appendChild(functionalModeSelect);
+
+  const functionalModeHint = document.createElement("p");
+  functionalModeHint.className = "footnote";
+  functionalModeHint.textContent = FUNCTIONAL_MODE_OPTIONS[0].hint;
+  functionalModeSection.appendChild(functionalModeHint);
+
+  panel.appendChild(functionalModeSection);
 
   // ----- Orientation -----
   const orientationSection = document.createElement("section");
@@ -342,6 +408,16 @@ function renderOrganizeScreens(
   resetDocumentationBtn.hidden = true;
   runSection.appendChild(resetDocumentationBtn);
 
+  // Advanced Functional Analysis only: bundle each screen's markdown document
+  // into a single `.zip` download. Scope follows the selection (selected cards,
+  // else the whole board). Gated on `mode === "advanced"` in refreshAnalyzeButton.
+  const exportDocumentationBtn = document.createElement("button");
+  exportDocumentationBtn.type = "button";
+  exportDocumentationBtn.className = "button button-secondary button-block";
+  exportDocumentationBtn.textContent = "Export documentation (.md zip)";
+  exportDocumentationBtn.hidden = true;
+  runSection.appendChild(exportDocumentationBtn);
+
   const documentHint = document.createElement("p");
   documentHint.className = "footnote";
   documentHint.hidden = true;
@@ -375,7 +451,15 @@ function renderOrganizeScreens(
     );
     boardTypeHint.textContent = match ? match.intent : "";
     boardTypeStatusHint.hidden = boardTypeSelect.value !== "design-review";
+    updateFunctionalModeVisibility();
     updateAnnotationsVisibility();
+  });
+
+  functionalModeSelect.addEventListener("change", () => {
+    const match = FUNCTIONAL_MODE_OPTIONS.find(
+      (option) => option.value === functionalModeSelect.value
+    );
+    functionalModeHint.textContent = match ? match.hint : "";
   });
 
   orientationSelect.addEventListener("change", () => {
@@ -399,6 +483,7 @@ function renderOrganizeScreens(
     orientation: Orientation;
     annotationsMode: AnnotationsMode;
     flow: boolean;
+    functionalMode: FunctionalMode;
   } | null = null;
   let lastBoardSeen: string | null = null;
   /** Fingerprint of the last board settings written into the form (edit mode). */
@@ -503,7 +588,8 @@ function renderOrganizeScreens(
     | "review"
     | "resetReview"
     | "document"
-    | "resetDocumentation";
+    | "resetDocumentation"
+    | "exportDocumentation";
 
   // Which analyze/document action is in flight, so only that button shows a
   // spinner label while the others (plus run/flow) stay disabled.
@@ -564,6 +650,16 @@ function renderOrganizeScreens(
       analyzeBusyAction === "resetDocumentation"
         ? "Resetting..."
         : "Reset documentation";
+
+    // Export is Advanced-only: Basic cards have no single markdown document.
+    const exportEligible =
+      docEligible && !!currentDocument && currentDocument.mode === "advanced";
+    exportDocumentationBtn.hidden = !exportEligible;
+    exportDocumentationBtn.disabled = busy || analyzeBusy || !exportEligible;
+    exportDocumentationBtn.textContent =
+      analyzeBusyAction === "exportDocumentation"
+        ? "Exporting..."
+        : "Export documentation (.md zip)";
 
     documentHint.hidden = !docEligible;
     if (docEligible) {
@@ -655,6 +751,11 @@ function renderOrganizeScreens(
     }
   }
 
+  /** Show the Basic/Advanced sub-select only for functional-analysis boards. */
+  function updateFunctionalModeVisibility() {
+    functionalModeSection.hidden = boardTypeSelect.value !== "functional-analysis";
+  }
+
   function refreshResetButton() {
     const inEditMode = currentMode === "edit";
     const show = inEditMode && !!currentBoardSectionId;
@@ -685,7 +786,11 @@ function renderOrganizeScreens(
       "|" +
       ann.position +
       "|" +
-      (settings.flow === true ? "1" : "0")
+      (settings.flow === true ? "1" : "0") +
+      "|" +
+      (settings.functional && settings.functional.mode === "advanced"
+        ? "advanced"
+        : "basic")
     );
   }
 
@@ -699,13 +804,20 @@ function renderOrganizeScreens(
     const ann = board.settings.annotations;
     annotationsSelect.value = annotationsModeFromSettings(ann.enabled, ann.mode);
     flowCheckbox.checked = board.settings.flow === true;
+    const functionalMode: FunctionalMode =
+      board.settings.functional && board.settings.functional.mode === "advanced"
+        ? "advanced"
+        : "basic";
+    functionalModeSelect.value = functionalMode;
     boardTypeSelect.dispatchEvent(new Event("change"));
     orientationSelect.dispatchEvent(new Event("change"));
+    functionalModeSelect.dispatchEvent(new Event("change"));
     appliedSettings = {
       boardType: board.settings.boardType,
       orientation: board.settings.orientation,
       annotationsMode: annotationsModeFromSettings(ann.enabled, ann.mode),
       flow: board.settings.flow === true,
+      functionalMode,
     };
   }
 
@@ -841,6 +953,7 @@ function renderOrganizeScreens(
     // Reflect the (possibly updated) capabilities + preserved-count for the
     // board type now shown in the form. Safe to call even after a dispatched
     // change event already ran it — it is idempotent.
+    updateFunctionalModeVisibility();
     updateAnnotationsVisibility();
   }
 
@@ -851,10 +964,15 @@ function renderOrganizeScreens(
     annotations: AnnotationParam | undefined;
     orientationParam: Orientation | undefined;
     flow: boolean;
+    functionalMode: FunctionalMode;
   } {
     const boardType = boardTypeSelect.value as BoardType;
     const annotationsMode = annotationsSelect.value as AnnotationsMode;
     const orientationChoice = orientationSelect.value as OrientationChoice;
+    // Only meaningful for functional-analysis; harmless otherwise (the engine
+    // persists it regardless but only the Functional Card builder reads it).
+    const functionalMode: FunctionalMode =
+      functionalModeSelect.value === "advanced" ? "advanced" : "basic";
 
     // Omit annotations entirely when the board type cannot host them, so the
     // engine receives no annotation intent for an incapable type (it does not
@@ -886,6 +1004,7 @@ function renderOrganizeScreens(
       annotations,
       orientationParam,
       flow: flowCheckbox.checked,
+      functionalMode,
     };
   }
 
@@ -897,6 +1016,15 @@ function renderOrganizeScreens(
     if (appliedSettings.boardType !== form.boardType) return "layout";
     if (appliedSettings.orientation !== form.orientation) return "layout";
     if (appliedSettings.flow !== form.flow) return "layout";
+    // A functional mode switch rebuilds the Functional Card structure (and does
+    // not preserve content), so it is a layout change. Only compared when the
+    // board is functional-analysis — other types ignore the field.
+    if (
+      form.boardType === "functional-analysis" &&
+      appliedSettings.functionalMode !== form.functionalMode
+    ) {
+      return "layout";
+    }
     // A pending flow-scope gesture (flow ON + a 2+ subset selected) is a
     // layout-level change even when no form field moved, so Apply is never
     // blocked as "no changes". The engine re-derives the scope from the live
@@ -928,6 +1056,14 @@ function renderOrganizeScreens(
         const turningOffReview =
           appliedSettings?.boardType === "design-review" &&
           form.boardType !== "design-review";
+        // A same-board-type switch between Basic and Advanced functional modes:
+        // the Functional Card is rebuilt and its current documentation is NOT
+        // carried across (the two structures share no field keys), so the
+        // generic "text is always preserved" copy would be misleading.
+        const switchingFunctionalMode =
+          appliedSettings?.boardType === "functional-analysis" &&
+          form.boardType === "functional-analysis" &&
+          appliedSettings.functionalMode !== form.functionalMode;
         // Surface selective-flow scoping in the confirm so it is never silent.
         const scopeLine =
           flowCheckbox.checked &&
@@ -937,14 +1073,34 @@ function renderOrganizeScreens(
               currentFlowScopeCount +
               " selected screens, in selection order."
             : "";
+        let title: string;
+        let body: string;
+        let confirmLabel: string;
+        if (switchingFunctionalMode) {
+          const toLabel =
+            form.functionalMode === "advanced" ? "Advanced" : "Basic";
+          title = "Switch to " + toLabel + " mode?";
+          body =
+            "Switching Functional Analysis mode rebuilds the Functional Card on every screen and clears its current documentation (the Basic fields and the Advanced document do not carry across). Card titles, descriptions, and renamed frames are still preserved. This cannot be undone from the panel." +
+            scopeLine;
+          confirmLabel = "Switch mode";
+        } else if (turningOffReview) {
+          title = "Remove review cards?";
+          body =
+            "Switching away from Design Review removes the Review Card under each screen, including any feedback typed into them. Edited card titles, descriptions, and renamed frames are still preserved. This cannot be undone from the panel." +
+            scopeLine;
+          confirmLabel = "Remove review cards";
+        } else {
+          title = "Update board layout?";
+          body =
+            "The layout will be rebuilt with the new orientation / settings. Text you edited (section and card titles, descriptions, and review feedback) and any frames you renamed are always preserved. Manual spacing tweaks on the container or cards may reset to baseline defaults." +
+            scopeLine;
+          confirmLabel = "Update layout";
+        }
         const ok = await inlineConfirm({
-          title: turningOffReview ? "Remove review cards?" : "Update board layout?",
-          body: turningOffReview
-            ? "Switching away from Design Review removes the Review Card under each screen, including any feedback typed into them. Edited card titles, descriptions, and renamed frames are still preserved. This cannot be undone from the panel." +
-              scopeLine
-            : "The layout will be rebuilt with the new orientation / settings. Text you edited (section and card titles, descriptions, and review feedback) and any frames you renamed are always preserved. Manual spacing tweaks on the container or cards may reset to baseline defaults." +
-              scopeLine,
-          confirmLabel: turningOffReview ? "Remove review cards" : "Update layout",
+          title,
+          body,
+          confirmLabel,
           cancelLabel: "Cancel",
         });
         if (!ok) return;
@@ -965,11 +1121,15 @@ function renderOrganizeScreens(
         annotations?: AnnotationParam;
         orientation?: Orientation;
         flow?: boolean;
+        functionalMode?: FunctionalMode;
       } = { boardType: form.boardType };
       if (form.annotations !== undefined) params.annotations = form.annotations;
       if (form.orientationParam !== undefined)
         params.orientation = form.orientationParam;
       params.flow = flowCheckbox.checked;
+      if (form.boardType === "functional-analysis") {
+        params.functionalMode = form.functionalMode;
+      }
 
       ctx.send({
         type: "apply-board-changes",
@@ -996,11 +1156,15 @@ function renderOrganizeScreens(
       orientation?: Orientation;
       acceptedVariantGroupKeys?: string[];
       flow?: boolean;
+      functionalMode?: FunctionalMode;
     } = { boardType: form.boardType };
     if (form.annotations !== undefined) params.annotations = form.annotations;
     if (form.orientationParam !== undefined)
       params.orientation = form.orientationParam;
     if (form.flow) params.flow = true;
+    if (form.boardType === "functional-analysis") {
+      params.functionalMode = form.functionalMode;
+    }
     // Only send the acceptance list when groups were proposed. An empty
     // array means "accept none"; omitting it (no proposals) accepts all.
     if (proposedVariantGroups.length) {
@@ -1173,6 +1337,20 @@ function renderOrganizeScreens(
     ctx.send({ type: "reset-documentation", target });
   });
 
+  exportDocumentationBtn.addEventListener("click", () => {
+    if (busy || analyzeBusy) return;
+    if (!documentEligible()) return;
+    if (!currentDocument || currentDocument.mode !== "advanced") return;
+
+    setAnalyzeBusy(true, "exportDocumentation");
+    resultHost.innerHTML = "";
+    ctx.trackEvent("organize_screens_export_documentation", {
+      target: documentTarget(),
+      screenCount: (currentDocument && currentDocument.screenCount) || 0,
+    });
+    ctx.send({ type: "export-documentation" });
+  });
+
   // ---------- Reset-to-screens handler ----------
   resetBtn.addEventListener("click", async () => {
     if (busy) return;
@@ -1300,6 +1478,7 @@ function renderOrganizeScreens(
         orientation: form.orientation,
         annotationsMode: form.annotationsMode,
         flow: form.flow,
+        functionalMode: form.functionalMode,
       };
       if (currentBoardSectionId) {
         const annEnabled = form.annotationsMode !== "off";
@@ -1314,6 +1493,7 @@ function renderOrganizeScreens(
               position: "belowDescription",
             },
             flow: form.flow,
+            functional: { mode: form.functionalMode },
           }
         );
       }
@@ -1369,7 +1549,8 @@ function renderOrganizeScreens(
     skipped: string[],
     cardName?: string,
     target?: "card" | "section",
-    screenCount?: number
+    screenCount?: number,
+    note?: string
   ) {
     resultHost.innerHTML = "";
     const block = document.createElement("div");
@@ -1392,6 +1573,7 @@ function renderOrganizeScreens(
       applied.length ? applied.join(", ") : updatedEmpty,
     ]);
     if (skipped.length) summary.push(["Could not update", skipped.join(", ")]);
+    if (note) summary.push(["Why", note]);
 
     for (const [k, v] of summary) {
       const row = document.createElement("div");
@@ -1430,13 +1612,61 @@ function renderOrganizeScreens(
         msg.skipped,
         msg.cardName,
         msg.target,
-        msg.screenCount
+        msg.screenCount,
+        msg.note
       );
     } else if (msg.type === "analyze-design-error") {
       setAnalyzeBusy(false);
       renderError(msg.message);
+    } else if (msg.type === "export-documentation-result") {
+      setAnalyzeBusy(false);
+      handleExportResult(msg.files, msg.zipName);
     }
   });
+
+  // Build the zip from the runtime's plain { name, content } payload and trigger
+  // a download. Filenames are sanitized here (the UI owns the DOM/Blob lane);
+  // duplicate names get a numeric suffix so no entry is silently dropped.
+  function handleExportResult(
+    files: Array<{ name: string; content: string }>,
+    zipName: string
+  ): void {
+    if (!files || !files.length) {
+      renderInfo("No Advanced documentation to export yet.");
+      return;
+    }
+    try {
+      const used: Record<string, number> = {};
+      const entries = files.map((f, i) => {
+        let base = sanitizeFileBase(f.name, "screen-" + (i + 1));
+        const count = used[base] || 0;
+        used[base] = count + 1;
+        if (count > 0) base = base + "-" + (count + 1);
+        return { name: base + ".md", content: f.content };
+      });
+      const bytes = createZipStore(entries);
+      const blob = new Blob([bytes], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const archive = sanitizeFileBase(zipName, "functional-docs") + ".zip";
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = archive;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      renderInfo(
+        "Exported " +
+          entries.length +
+          (entries.length === 1 ? " document" : " documents") +
+          " to " +
+          archive +
+          "."
+      );
+    } catch (e: any) {
+      renderError("Could not build the export: " + ((e && e.message) || String(e)));
+    }
+  }
 
   const unsubscribeContext = ctx.onSelectionContextChange(
     "organize-screens",

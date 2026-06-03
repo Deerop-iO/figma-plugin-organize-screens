@@ -25,9 +25,12 @@ import {
   osResetDesignReviewFields,
   osApplySectionMeta,
   osCollectSectionDescribeSummaries,
+  osCollectSectionFunctionalSummaries,
   osBuildSectionMetaFallback,
   osResolveCreateDocumentationTarget,
   osResolveCreateDocumentationSectionTarget,
+  osBuildFunctionalJourneyContext,
+  osCollectFunctionalDocuments,
   osApplyFunctionalAnalysis,
   osResetFunctionalFields,
 } from "../engine-inline";
@@ -39,8 +42,10 @@ import {
   buildSectionMetaInstruction,
   validateSectionMeta,
 } from "../analysis/designReview";
-import { functionalMode } from "../analysis/functionalAnalysis";
+import { functionalMode, functionalAdvancedMode } from "../analysis/functionalAnalysis";
 import { pushSelectionContexts } from "./selection-probes";
+
+type FunctionalMode = "basic" | "advanced";
 
 type AnalyzeScope = "describe" | "review";
 type AnalyzeTarget = "card" | "section";
@@ -58,7 +63,10 @@ type ResultOperation =
 interface AnalysisBinding {
   /** Prompt scope (design review only); functional ignores it. */
   scope?: AnalyzeScope;
-  mode: typeof designReviewMode | typeof functionalMode;
+  mode:
+    | typeof designReviewMode
+    | typeof functionalMode
+    | typeof functionalAdvancedMode;
   apply: (
     sectionId: string,
     cardId: string,
@@ -66,11 +74,28 @@ interface AnalysisBinding {
   ) => Promise<{ applied: string[]; skipped: string[] }>;
   /** Optional token ceiling for the backend (functional doc needs more). */
   maxTokens?: number;
+  /** Optional client timeout override (ms); long-form docs need more. */
+  timeoutMs?: number;
+  /** Backend output mode; "text" for raw long-form markdown (no json_object). */
+  responseFormat?: "json" | "text";
 }
 
-// Functional docs have 8 sections; request a higher (backend-clamped) ceiling
-// so the JSON does not truncate at the default 1200.
+// Basic functional docs have 8 sections; request a higher (backend-clamped)
+// ceiling so the JSON does not truncate at the default 1200.
 const FUNCTIONAL_MAX_TOKENS = 2500;
+// Advanced functional docs are one long-form markdown report wrapped in a JSON
+// string. A model that overshoots the ~8000-char target easily exceeds a 4000
+// token budget; when the JSON string is cut mid-report it no longer parses and
+// the whole screen is skipped. Request generous headroom (backend clamps to its
+// own ceiling, so a too-high value here is safe).
+const FUNCTIONAL_ADVANCED_MAX_TOKENS = 8000;
+// The long-form Advanced report can take noticeably longer to generate than a
+// Design Review. Allow the client to wait out the backend's full budget instead
+// of aborting at the default. Keep this just ABOVE the backend function
+// `maxDuration` (currently 300s in vercel-backend/vercel.json) so the client
+// receives the backend's own response/504 rather than aborting first. Raise
+// both together if Advanced screens still time out.
+const FUNCTIONAL_ADVANCED_TIMEOUT_MS = 310000;
 
 // Export width balances vision legibility against payload size / token cost.
 const ANALYZE_EXPORT_WIDTH = 1024;
@@ -90,7 +115,13 @@ function postError(message: string): void {
 function postResult(
   operation: ResultOperation,
   target: AnalyzeTarget,
-  payload: { applied: string[]; skipped: string[]; cardName?: string; screenCount?: number }
+  payload: {
+    applied: string[];
+    skipped: string[];
+    cardName?: string;
+    screenCount?: number;
+    note?: string;
+  }
 ): void {
   figma.ui.postMessage({
     type: "analyze-design-result",
@@ -100,6 +131,7 @@ function postResult(
     skipped: payload.skipped || [],
     cardName: payload.cardName,
     screenCount: payload.screenCount,
+    note: payload.note,
   });
 }
 
@@ -186,6 +218,16 @@ async function applySectionMetaFromDescriptions(
   return { applied, skipped };
 }
 
+interface JourneyScreen {
+  cardId: string;
+  name: string;
+}
+interface FlowEdge {
+  from: string;
+  to: string;
+  trigger?: string;
+}
+
 interface ScreenRef {
   sectionId: string;
   cardId: string;
@@ -193,6 +235,10 @@ interface ScreenRef {
   cardName?: string;
   frameName?: string;
   existingDescription?: string;
+  // Cross-screen journey context (Advanced functional docs only). Shared by
+  // every screen in a run; `cardId` identifies which entry is current.
+  journeyScreens?: JourneyScreen[];
+  flowEdges?: FlowEdge[];
 }
 
 type OneScreenResult =
@@ -234,8 +280,13 @@ async function analyzeOneScreen(
       frameName: screen.frameName,
       cardTitle: screen.cardName,
       existingDescription: screen.existingDescription,
+      journeyScreens: screen.journeyScreens,
+      flowEdges: screen.flowEdges,
+      currentCardId: screen.cardId,
     }),
     max_tokens: binding.maxTokens,
+    timeoutMs: binding.timeoutMs,
+    responseFormat: binding.responseFormat,
   });
 
   const validation = binding.mode.validate(data.content);
@@ -271,14 +322,27 @@ function designReviewBinding(scope: AnalyzeScope): AnalysisBinding {
   };
 }
 
-// Binding for the functional-analysis path: single-scope mode + functional apply.
-function functionalBinding(): AnalysisBinding {
+// Binding for the functional-analysis path. The resolved board/card mode picks
+// the prompt+schema (basic 8 fields vs advanced single doc) and the token
+// ceiling; the engine apply branches on the card's actual structure, so passing
+// either validated shape to osApplyFunctionalAnalysis is safe.
+function functionalBinding(mode: FunctionalMode): AnalysisBinding {
+  const advanced = mode === "advanced";
   return {
-    mode: functionalMode,
+    mode: advanced ? functionalAdvancedMode : functionalMode,
     apply: (sectionId, cardId, value) =>
       osApplyFunctionalAnalysis(sectionId, cardId, value),
-    maxTokens: FUNCTIONAL_MAX_TOKENS,
+    maxTokens: advanced ? FUNCTIONAL_ADVANCED_MAX_TOKENS : FUNCTIONAL_MAX_TOKENS,
+    timeoutMs: advanced ? FUNCTIONAL_ADVANCED_TIMEOUT_MS : undefined,
+    // Advanced is a single long-form markdown doc: take raw text, not JSON.
+    responseFormat: advanced ? "text" : "json",
   };
+}
+
+// Normalize a resolver's mode hint into the strict union (defaults to basic so
+// an older engine that does not report a mode keeps today's behavior).
+function resolveFunctionalMode(value: unknown): FunctionalMode {
+  return value === "advanced" ? "advanced" : "basic";
 }
 
 async function runAnalyzeCard(scope: AnalyzeScope): Promise<void> {
@@ -492,8 +556,10 @@ export async function runResetReview(target: AnalyzeTarget): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // Create Documentation (Functional Analysis). Reuses the export -> call ->
-// validate -> apply pipeline via the functional binding. No section summary
-// (functional documentation has no equivalent synthesis step in v1).
+// validate -> apply pipeline via the functional binding. After writing, runs
+// synthesize the section Overview Header (title + description) from the
+// documented cards (Advanced doc or Basic fields), reusing the same
+// section-meta path as Describe.
 // ---------------------------------------------------------------------------
 
 async function runDocumentCard(): Promise<void> {
@@ -505,6 +571,28 @@ async function runDocumentCard(): Promise<void> {
 
   postProgress("analyzing", "Documenting screen\u2026");
 
+  const cardMode = resolveFunctionalMode(target.mode);
+
+  // Single-screen Advanced docs still get the board's other screens as journey
+  // context (same helper as section scope), so a single run can reference its
+  // neighbors. Skipped when the board has only this one functional screen.
+  let journeyScreens: JourneyScreen[] | undefined;
+  let flowEdges: FlowEdge[] | undefined;
+  if (cardMode === "advanced") {
+    try {
+      const journey = await osBuildFunctionalJourneyContext(target.sectionId);
+      if (journey && journey.screens && journey.screens.length > 1) {
+        journeyScreens = journey.screens;
+        flowEdges = journey.edges;
+      }
+    } catch (e: any) {
+      console.warn(
+        "[create-documentation] journey context failed:",
+        (e && e.message) || e
+      );
+    }
+  }
+
   const r = await analyzeOneScreen(
     {
       sectionId: target.sectionId,
@@ -512,8 +600,10 @@ async function runDocumentCard(): Promise<void> {
       frameId: target.frameId,
       cardName: target.cardName,
       frameName: target.frameName,
+      journeyScreens,
+      flowEdges,
     },
-    functionalBinding()
+    functionalBinding(cardMode)
   );
 
   if (!r.ok) {
@@ -525,9 +615,28 @@ async function runDocumentCard(): Promise<void> {
     return;
   }
 
+  const applied = (r.applied || []).slice();
+  const skipped = (r.skipped || []).slice();
+
+  // Card-scope docs also refresh the section Overview Header (title +
+  // description) from this screen's documented Functional Card (Advanced doc or
+  // Basic fields), same synthesis path as section scope and as the Describe
+  // action on Design Review boards.
+  const summaries = await osCollectSectionFunctionalSummaries([
+    { cardId: target.cardId, cardName: target.cardName },
+  ]);
+  if (summaries.length) {
+    const meta = await applySectionMetaFromDescriptions(
+      target.sectionId,
+      summaries
+    );
+    for (let j = 0; j < meta.applied.length; j++) applied.push(meta.applied[j]);
+    for (let j = 0; j < meta.skipped.length; j++) skipped.push(meta.skipped[j]);
+  }
+
   postResult("document", "card", {
-    applied: r.applied,
-    skipped: r.skipped,
+    applied,
+    skipped,
     cardName: target.cardName,
   });
   pushSelectionContexts();
@@ -543,6 +652,35 @@ async function runDocumentSection(): Promise<void> {
   const screens = target.screens || [];
   const appliedScreens: string[] = [];
   const skippedScreens: string[] = [];
+  // Capture WHY screens were skipped so a section run never fails silently:
+  // without this the model returning an invalid/declined result for every
+  // screen looks identical to "nothing happened" (the progress counter just
+  // reaches the end). The first failure reason represents the dominant cause.
+  let firstFailReason = "";
+  let firstDeclineReason = "";
+  let nothingWrittenCount = 0;
+  // Mode is board-level: every Functional Card in the section shares it.
+  const sectionMode = resolveFunctionalMode(target.mode);
+
+  // Advanced docs get cross-screen journey context (the other screens in this
+  // run + any Flow connections) so the model documents journeys instead of
+  // reporting downstream screens as unavailable. Built once and shared.
+  let journeyScreens: JourneyScreen[] | undefined;
+  let flowEdges: FlowEdge[] | undefined;
+  if (sectionMode === "advanced") {
+    try {
+      const journey = await osBuildFunctionalJourneyContext(target.sectionId);
+      if (journey && journey.screens && journey.screens.length > 1) {
+        journeyScreens = journey.screens;
+        flowEdges = journey.edges;
+      }
+    } catch (e: any) {
+      console.warn(
+        "[create-documentation] journey context failed:",
+        (e && e.message) || e
+      );
+    }
+  }
 
   for (let i = 0; i < screens.length; i++) {
     const s = screens[i];
@@ -560,14 +698,33 @@ async function runDocumentSection(): Promise<void> {
           frameId: s.frameId,
           cardName: s.cardName,
           frameName: s.frameName,
+          journeyScreens,
+          flowEdges,
         },
-        functionalBinding()
+        functionalBinding(sectionMode)
       );
-      if (r.ok) appliedScreens.push(label);
-      else skippedScreens.push(label);
+      if (r.ok) {
+        // Validation passed but the engine wrote nothing back (e.g. the card's
+        // structure did not match the returned shape). Count it as skipped so
+        // it is never reported as a success.
+        if (r.applied && r.applied.length) appliedScreens.push(label);
+        else {
+          skippedScreens.push(label);
+          nothingWrittenCount += 1;
+        }
+      } else {
+        skippedScreens.push(label);
+        if (r.skippedReason && !firstDeclineReason) {
+          firstDeclineReason = r.skippedReason;
+        } else if (r.error && !firstFailReason) {
+          firstFailReason = r.error;
+        }
+      }
     } catch (e: any) {
-      console.warn("[create-documentation] screen failed:", (e && e.message) || e);
+      const msg = (e && e.message) || String(e);
+      console.warn("[create-documentation] screen failed:", msg);
       skippedScreens.push(label);
+      if (!firstFailReason) firstFailReason = msg;
     }
 
     await yieldToLoop();
@@ -578,11 +735,44 @@ async function runDocumentSection(): Promise<void> {
   if (appliedScreens.length) applied.push(countLabel(appliedScreens.length));
   if (skippedScreens.length) skipped.push(countLabel(skippedScreens.length));
 
+  // Section summary: feed the Overview Header title + description from the
+  // documented Functional Cards on canvas (Advanced = long-form doc, Basic = the
+  // filled section fields), the same synthesis path the Describe action uses for
+  // Design Review boards. Read live after the loop so freshly written content is
+  // included; skipped when no field/doc text is available.
+  const summaries = await osCollectSectionFunctionalSummaries(screens);
+  if (summaries.length) {
+    const meta = await applySectionMetaFromDescriptions(
+      target.sectionId,
+      summaries
+    );
+    for (let j = 0; j < meta.applied.length; j++) applied.push(meta.applied[j]);
+    for (let j = 0; j < meta.skipped.length; j++) skipped.push(meta.skipped[j]);
+  }
+
+  // Surface the dominant failure reason when screens were skipped, so the user
+  // gets an actionable message instead of a silent empty result.
+  let note = "";
+  if (skippedScreens.length) {
+    if (firstDeclineReason) {
+      note = "The model declined to document some screens: " + firstDeclineReason;
+    } else if (firstFailReason) {
+      note = "Some screens returned an invalid format: " + firstFailReason;
+    } else if (nothingWrittenCount === skippedScreens.length) {
+      note =
+        "The documentation came back but did not match these cards' fields, so nothing was written.";
+    }
+    if (!appliedScreens.length && note) {
+      figma.notify("Create Documentation: " + note, { error: true });
+    }
+  }
+
   postResult("document", "section", {
     applied,
     skipped,
     cardName: target.sectionName,
     screenCount: screens.length,
+    note: note || undefined,
   });
   pushSelectionContexts();
 }
@@ -656,6 +846,40 @@ export async function runResetDocumentation(target: AnalyzeTarget): Promise<void
       cardName: target2.cardName,
     });
     pushSelectionContexts();
+  } catch (error: any) {
+    postError((error && error.message) || String(error));
+  }
+}
+
+// Export Advanced functional documentation. The engine gathers the markdown
+// from the selected cards (or the whole board) on the current selection; this
+// function forwards plain { name, content } strings to the UI, which owns the
+// zip + download (DOM/Blob/URL only exist in the iframe). No network, no
+// closePlugin. Always posts exactly one terminal message (a result — including
+// the empty case — or an error) so the UI never stays stuck in "exporting".
+export async function runExportDocumentation(): Promise<void> {
+  try {
+    const collected = osCollectFunctionalDocuments();
+    if (!collected || collected.eligible !== true) {
+      postError((collected && collected.reason) || "This selection can't be exported.");
+      return;
+    }
+
+    const documents: Array<{ name: string; document: string }> =
+      collected.documents || [];
+    const files = documents.map((d) => ({ name: d.name, document: d.document }));
+    const base = (collected.sectionName || "functional").trim() || "functional";
+    const zipName = base + "-functional-docs";
+
+    if (!files.length) {
+      figma.notify("No Advanced documentation to export yet.");
+    }
+
+    figma.ui.postMessage({
+      type: "export-documentation-result",
+      files: files.map((f) => ({ name: f.name, content: f.document })),
+      zipName,
+    });
   } catch (error: any) {
     postError((error && error.message) || String(error));
   }

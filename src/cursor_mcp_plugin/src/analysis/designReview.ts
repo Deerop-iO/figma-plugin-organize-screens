@@ -59,6 +59,15 @@ export interface AnalysisContext {
   frameName?: string;
   cardTitle?: string;
   existingDescription?: string;
+  /**
+   * Cross-screen "journey" context (Advanced functional analysis only). The
+   * ordered set of functional screens in the same run, the directed Flow
+   * connections between them, and the cardId of the screen being documented so
+   * the prompt can mark it unambiguously. Other modes ignore these.
+   */
+  journeyScreens?: Array<{ cardId: string; name: string }>;
+  flowEdges?: Array<{ from: string; to: string; trigger?: string }>;
+  currentCardId?: string;
 }
 
 export type ValidationResult =

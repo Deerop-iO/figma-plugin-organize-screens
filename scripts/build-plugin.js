@@ -44,6 +44,9 @@ const EXPORT_FOOTER =
   "  osBuildSectionMetaFallback,\n" +
   "  osResolveCreateDocumentationTarget,\n" +
   "  osResolveCreateDocumentationSectionTarget,\n" +
+  "  osBuildFunctionalJourneyContext,\n" +
+  "  osCollectFunctionalDocuments,\n" +
+  "  osCollectSectionFunctionalSummaries,\n" +
   "  osApplyFunctionalAnalysis,\n" +
   "  osResetFunctionalFields,\n" +
   "};\n";

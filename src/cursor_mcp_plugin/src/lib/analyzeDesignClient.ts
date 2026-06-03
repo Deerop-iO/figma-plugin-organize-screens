@@ -28,7 +28,13 @@ const ALLOWED_HOSTS = [
   "figma-plugin-organize-screens.vercel.app",
 ];
 
-const REQUEST_TIMEOUT_MS = 45000;
+// Default client-side cap. Kept just above the backend function budget
+// (`maxDuration` in vercel-backend/vercel.json) so the client never gives up
+// before the backend's own deadline — otherwise a slow generation surfaces as a
+// premature "timed out" even though the backend was still working. A per-request
+// `timeoutMs` overrides this (the long-form Advanced functional report needs
+// more headroom than a quick Design Review).
+const REQUEST_TIMEOUT_MS = 65000;
 
 export interface AnalyzeDesignBackendRequest {
   /** Omit for text-only requests (e.g. section-summary synthesis). */
@@ -43,6 +49,18 @@ export interface AnalyzeDesignBackendRequest {
    * 8-section output can otherwise truncate at the default.
    */
   max_tokens?: number;
+  /**
+   * Optional client-side timeout override (ms). Not sent to the backend. The
+   * effective ceiling is still the backend function `maxDuration`; this only
+   * stops the client from aborting early for a slow (long-form) request.
+   */
+  timeoutMs?: number;
+  /**
+   * Output mode. "json" (default) asks the backend for `response_format:
+   * json_object`; "text" skips it and returns raw model output. Use "text" for
+   * single long-form documents that would otherwise break JSON escaping.
+   */
+  responseFormat?: "json" | "text";
 }
 
 export interface AnalyzeDesignBackendData {
@@ -129,15 +147,31 @@ export async function requestAnalyzeDesign(
   const url = API_BASE + "/api/bonzai/analyze-design";
   assertAllowedHost(url);
 
+  // `timeoutMs` is a client-only concern; strip it from the network payload so
+  // the backend only ever sees the fields it expects.
+  const timeoutMs =
+    typeof body.timeoutMs === "number" && body.timeoutMs > 0
+      ? body.timeoutMs
+      : REQUEST_TIMEOUT_MS;
+  const payload: AnalyzeDesignBackendRequest = {
+    imageBase64: body.imageBase64,
+    mimeType: body.mimeType,
+    systemContext: body.systemContext,
+    instruction: body.instruction,
+    model: body.model,
+    max_tokens: body.max_tokens,
+    responseFormat: body.responseFormat,
+  };
+
   let response: Response;
   try {
     response = await withTimeout(
       fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       }),
-      REQUEST_TIMEOUT_MS
+      timeoutMs
     );
   } catch (error: any) {
     const raw = (error && error.message) || "";

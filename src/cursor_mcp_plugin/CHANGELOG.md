@@ -8,6 +8,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Functional analysis now fills the section Overview Header** — running
+  Create Documentation on a Functional Analysis board left the **Section Title**
+  and **Section Description** at their placeholders, because the Overview Header
+  synthesis only ran for the Design Review *Describe* action and read the (empty)
+  Card Description. Documentation runs now synthesize the title + description
+  from the documented Functional Cards on canvas (Advanced = the long-form
+  document; Basic = the filled section fields), reusing the same section-meta
+  path as Describe. Applies to both single-screen and whole-section runs.
+
+### Added
+
+- **Export Advanced functional documentation as a `.md` zip** — Advanced
+  Functional Analysis boards now show an **Export documentation (.md zip)**
+  button. It bundles each screen's long-form markdown into one `.zip`
+  (one `.md` per screen) and downloads it from the plugin UI. Scope follows the
+  selection: selected Screen Cards export just those screens, otherwise the
+  whole board is exported. The button only appears in **Advanced** mode (Basic
+  cards have no single document), placeholder/empty documents are skipped, and
+  the archive is built by a zero-dependency STORE-method zip writer in the UI
+  lane (no new packages, no network).
+
+- **Advanced functional analysis is now cross-screen aware** — when documenting
+  a Functional Analysis board in **Advanced** mode, each screen's analysis now
+  receives the other screens in the run (their names, in order) plus the board's
+  Flow arrow connections and labels when Flow is enabled. The prompt treats the
+  set as one connected user journey and adds a new **Related Screens & Flow
+  Context** section (Previous/Next screen(s), Trigger, Data transferred,
+  Assumptions), so the model describes navigation between screens instead of
+  reporting "downstream screens unavailable" for screens that are actually part
+  of the same set. Both section ("document all screens") and single-screen runs
+  get this context; cross-screen behavior the model cannot directly see is
+  marked as assumptions. Basic functional and Design Review are unchanged.
+
+- **Functional Analysis: Basic / Advanced modes** — Functional Analysis boards
+  now offer a "Functional Analysis mode" sub-select (shown only for that board
+  type). **Basic** (default, unchanged) keeps the eight structured fields
+  (Purpose, User Actions, …, Open Questions). **Advanced** renders a single
+  long-form documentation field on each Functional Card, filled by the new
+  Functional Analyst prompt (`FUNCTIONAL_ANALYST_PROMPT.md`) and rendered as one
+  markdown block. The mode is persisted per board, threaded through compose and
+  recompose, and resolved structurally so Create Documentation requests the
+  matching prompt and token budget. Switching a board between modes rebuilds the
+  Functional Card and does **not** carry the current documentation across (the
+  two structures share no field keys); a dedicated confirmation makes this
+  explicit instead of the generic "text is always preserved" copy. Advanced docs
+  are preserved across same-mode Functional → Custom → Functional round trips.
+
+### Changed
+
+- **Advanced functional documentation now returns raw markdown instead of
+  JSON-wrapped markdown** — forcing a long-form report into a single JSON string
+  under `response_format: json_object` made models emit invalid JSON (unescaped
+  newlines/quotes) or truncate the string unparseably, so every Advanced run
+  failed with "Response was not valid JSON" and wrote nothing. The backend now
+  accepts an optional `responseFormat` ("json" default, "text" for Advanced) and
+  skips `response_format`/JSON normalization in text mode; the Advanced prompt
+  asks for plain markdown (with a `SKIP: <reason>` line to decline); and the
+  validator treats the content as markdown (fence-stripped, clamped) while still
+  accepting the legacy `{ document, meta }` JSON shape. Basic functional, Design
+  Review, and the section summary are unchanged (still JSON). A truncated report
+  is now usable text rather than a hard failure.
+
+### Fixed
+
+- **Create Documentation timed out before the backend finished (Advanced mode)**
+  — the client aborted every request at a fixed 45s, but the Vercel function is
+  allowed to run up to 60s (`maxDuration`), so a slow long-form Advanced
+  generation surfaced as "Analyze request timed out" even while the backend was
+  still working. The client timeout is now 65s (just past the backend budget) and
+  is overridable per request; the Advanced functional path requests a much longer
+  client timeout so it can wait out the backend's full budget. Note: the true
+  ceiling is still the Vercel function `maxDuration` — if Advanced screens still
+  time out, raise `maxDuration` in `vercel-backend/vercel.json` (requires a plan
+  that allows it) and redeploy. The backend `maxDuration` was raised from 60s to
+  300s to give long-form Advanced reports room to finish.
+
+- **Create Documentation (section scope) silently produced no results in
+  Advanced mode** — "Document all screens" ran the progress counter to the end
+  and wrote nothing, with no error, whenever the model output failed validation
+  on every screen. The section loop counted each failure as a bare "skipped"
+  with no reason. Two changes: (1) the section path now captures the dominant
+  failure reason (invalid format, model declined, or "came back but did not
+  match these cards' fields") and surfaces it as a "Why" line in the result plus
+  an error toast when nothing was written, so a section run is never silently
+  empty; and (2) a screen that validates but writes nothing back is now counted
+  as skipped instead of reported as a success.
+
+- **Advanced documentation JSON truncated against the token ceiling** — the
+  long-form Advanced report is wrapped in a single JSON string, so a model that
+  overshot the target length exceeded the 4000-token budget and the JSON was cut
+  mid-string, no longer parsing (the screen was skipped). The Advanced token
+  budget was raised on both the runtime request (`FUNCTIONAL_ADVANCED_MAX_TOKENS`
+  → 8000) and the backend clamp (`MAX_TOKENS_CEILING` → 8000). Redeploy the
+  Vercel backend for the higher ceiling to take effect.
+
 - **Review fields did not start as bullet lists by default** — Design Review
   feedback sections now apply native UNORDERED list formatting to their default
   placeholder text as well as restored reviewer content, so newly composed

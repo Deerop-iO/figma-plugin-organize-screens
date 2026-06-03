@@ -39,6 +39,7 @@ import {
   runResetReview,
   runCreateDocumentation,
   runResetDocumentation,
+  runExportDocumentation,
 } from "./runtime/analyze-design";
 import {
   getDocumentInfo,
@@ -217,6 +218,9 @@ figma.ui.onmessage = async (msg) => {
       break;
     case "reset-documentation":
       await runResetDocumentation(msg.target);
+      break;
+    case "export-documentation":
+      await runExportDocumentation();
       break;
   }
 };
