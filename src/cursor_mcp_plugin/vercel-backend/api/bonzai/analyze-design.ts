@@ -176,12 +176,27 @@ export default async function handler(
 
     const raw = await upstream.text();
     if (!upstream.ok) {
+      // Forward rate-limit / transient upstream statuses (429, 503) verbatim so
+      // the plugin client can honor retry-after and back off. The shared Bonzai
+      // org key makes 429 a real possibility under concurrent section runs.
+      // Everything else collapses to a generic 502. Pass through upstream
+      // retry-after when present so the client waits the suggested interval.
+      const status =
+        upstream.status === 429 || upstream.status === 503
+          ? upstream.status
+          : 502;
+      if (status !== 502) {
+        const retryAfter = upstream.headers.get("retry-after");
+        if (retryAfter) {
+          res.setHeader("retry-after", retryAfter);
+        }
+      }
       errorResponse(
         res,
         new Error(
           "Bonzai HTTP " + upstream.status + ": " + redactSecrets(raw).slice(0, 500)
         ),
-        502
+        status
       );
       return;
     }

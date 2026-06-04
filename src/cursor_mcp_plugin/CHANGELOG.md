@@ -8,6 +8,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Functional Analysis Element Inventory now renders as a Markdown table** — the
+  long-form report's Element Inventory was emitted as nested bullet lists on
+  faster models, which made it hard to scan and inconsistent with the reference
+  model's tabular layout. The pass-1 prompt now mandates a single Markdown table
+  with fixed columns (Section, Type, Label/text, Purpose, Interaction, Expected
+  behavior, States / Conditions) and explicitly forbids the bullet-list fallback,
+  with conditional-element flagging folded into the States / Conditions column.
+  This affects only the exported/stored long-form report (the Element Inventory
+  is not part of the on-canvas summary), so canvas rendering is unchanged. The
+  embedded prompt and `FUNCTIONAL_ANALYST_PROMPT.md` were updated together.
+
+- **Functional Analysis pass 1 now demands deeper functional reasoning** — a
+  follow-on to the visual-grounding pass: on faster models the report still
+  tended to document only the happy path and miss the structure that makes a
+  screen a real workflow. The pass-1 prompt now (1) names the surface type in
+  the Overview (full page vs modal/dialog/drawer/panel) so dismissal behavior is
+  accounted for; (2) requires Workflows to enumerate *every* distinct path —
+  primary success, each alternate choice, cancel/dismiss/close, and
+  error/validation — instead of a single happy path; (3) has the Element
+  Inventory flag conditional elements (fields that appear/hide/become required
+  based on another choice); and (4) makes Related Screens distinguish
+  user-initiated from system-initiated transitions so a back-office event is not
+  mislabeled as a click. The quality checklist verifies all four. A follow-up
+  pass then closed the last two gaps seen against the slower reference model: the
+  surface-type instruction now gives a concrete visual signature for modals
+  (centered card over dimmed/blurred content, × in a corner, Cancel/Confirm
+  footer) so a modal stops being mislabeled "full page", and the Workflows
+  instruction now requires one workflow per option of a binary/multi-option
+  decision — including the option that is NOT currently selected — so the
+  alternate (e.g. accept vs refuse) path is always documented. Applies to every
+  model; biggest improvement on the faster/more concise ones. The embedded prompt
+  and `FUNCTIONAL_ANALYST_PROMPT.md` were updated together.
+
+- **Functional Analysis pass 1 now demands full-screen visual grounding** — the
+  long-form report prompt was producing thin, generic documentation on faster
+  models: it would describe a populated sidebar as just a "navigation menu" and
+  skip the inbox, message list, status badges, step/progress indicators, and
+  metadata as if they were decorative. SOURCE HANDLING now instructs the model
+  to scan the entire screen edge to edge and transcribe visible labels verbatim,
+  the Element Inventory clarifies that navigation, list/inbox items, tabs,
+  badges, step indicators, and metadata are functional (only true spacers and
+  illustrations are skippable), and the quality checklist verifies it. Applies
+  to every model; biggest improvement on the faster/more concise ones. The
+  embedded prompt and `FUNCTIONAL_ANALYST_PROMPT.md` were updated together.
+
+- **Section-scope Create Documentation now runs screens in parallel** — a
+  section run used to document its screens strictly one at a time (export + two
+  AI passes + canvas write, fully sequential). It now generates the slow network
+  passes for several screens concurrently (bounded worker pool, default 3 in
+  flight) and then applies the results to the canvas sequentially in the
+  original order, so Figma writes stay serialized while the network waits
+  overlap. A single screen's failure no longer aborts the rest of the run, and
+  the progress label now counts completed screens (`Documented N of M`) followed
+  by a brief "Writing results" apply phase. Single-card Create Documentation is
+  unchanged. Expect a roughly 2.5–3x speedup on multi-screen sections; the
+  concurrency is deliberately conservative because the Bonzai key is shared.
+
 - **Default model is now `claude-sonnet-4-6`** — the backend's hardcoded model
   fallback moved from `gpt-4o` to the latest Sonnet, and `BONZAI_DEFAULT_MODEL`
   is now treated as an override that is only applied when non-empty (it is
@@ -33,6 +90,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recomposed or recreated to pick up the new five-field layout.
 
 ### Fixed
+
+- **Rate-limit responses are now retried instead of failing the run** — the
+  backend forwards an upstream `429` (rate limited) or `503` (transient) status
+  verbatim, along with any `retry-after` header, instead of collapsing every
+  upstream error into a generic `502`. The plugin client honors that signal with
+  a bounded retry (up to 2 attempts, waiting the suggested `retry-after` capped
+  at 30s, or a 2s fallback). This keeps a busy shared key from turning a brief
+  rate limit into a failed screen during concurrent section runs. Requires a
+  backend redeploy for the `429`/`503` pass-through to take effect.
 
 - **Functional summary fields use native Figma lists** — the four bulleted
   summary fields (Related Screens & Flow, Business Summary, Workflows,

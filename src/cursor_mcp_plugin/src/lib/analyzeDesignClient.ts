@@ -16,6 +16,8 @@
  * production origin).
  */
 
+import { delay } from "./delay";
+
 // Stable production alias (updated on every `vercel --prod`, so redeploys do
 // not require touching this). Use `http://localhost:3000` while running
 // `vercel dev`.
@@ -35,6 +37,15 @@ const ALLOWED_HOSTS = [
 // `timeoutMs` overrides this (the long-form Advanced functional report needs
 // more headroom than a quick Design Review).
 const REQUEST_TIMEOUT_MS = 65000;
+
+// Bounded retry for shared-key rate limits. The backend forwards upstream
+// 429/503 (see vercel-backend/api/bonzai/analyze-design.ts); anything else
+// (including the generic 502) is NOT retried. retry-after is honored when
+// present, capped so a hostile or oversized value cannot stall the UI, with a
+// short fallback when the header is missing or unparseable.
+const ANALYZE_MAX_RETRIES = 2;
+const RETRY_AFTER_CAP_MS = 30000;
+const RETRY_AFTER_FALLBACK_MS = 2000;
 
 export interface AnalyzeDesignBackendRequest {
   /** Omit for text-only requests (e.g. section-summary synthesis). */
@@ -107,6 +118,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+/**
+ * Convert an upstream `retry-after` header (integer seconds) into a capped
+ * backoff in ms. Falls back to a short delay when the header is missing or
+ * unparseable; caps the wait so an oversized value cannot stall the UI.
+ */
+function retryAfterMs(response: Response): number {
+  const header = response.headers.get("retry-after");
+  const seconds = header ? parseInt(header, 10) : NaN;
+  const ms =
+    isFinite(seconds) && seconds > 0 ? seconds * 1000 : RETRY_AFTER_FALLBACK_MS;
+  return Math.min(ms, RETRY_AFTER_CAP_MS);
+}
+
 /** Map sandbox/network errors to actionable copy (e.g. Vercel SSO wall). */
 function formatFetchFailure(message: string, status?: number, bodyPreview?: string): string {
   const lower = message.toLowerCase();
@@ -163,22 +187,41 @@ export async function requestAnalyzeDesign(
     responseFormat: body.responseFormat,
   };
 
+  // Bounded retry loop. Only HTTP 429/503 (forwarded verbatim by the backend)
+  // are retried; network failures and every other status fall through on the
+  // first attempt. Each attempt gets its own `withTimeout` (no AbortController
+  // — the sandbox rejects `signal` in fetch init).
   let response: Response;
-  try {
-    response = await withTimeout(
-      fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }),
-      timeoutMs
-    );
-  } catch (error: any) {
-    const raw = (error && error.message) || "";
-    throw new Error(redactSecrets(formatFetchFailure(raw)));
+  let text = "";
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await withTimeout(
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+        timeoutMs
+      );
+    } catch (error: any) {
+      const raw = (error && error.message) || "";
+      throw new Error(redactSecrets(formatFetchFailure(raw)));
+    }
+
+    // Read the status before parsing JSON so a rate-limit response retries
+    // instead of failing on a non-JSON error body.
+    if (
+      (response.status === 429 || response.status === 503) &&
+      attempt < ANALYZE_MAX_RETRIES
+    ) {
+      await delay(retryAfterMs(response));
+      continue;
+    }
+
+    text = await response.text().catch(() => "");
+    break;
   }
 
-  const text = await response.text().catch(() => "");
   if (!response.ok) {
     const preview = redactSecrets(text).slice(0, 300);
     throw new Error(

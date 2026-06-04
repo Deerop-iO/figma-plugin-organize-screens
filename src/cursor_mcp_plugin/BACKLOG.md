@@ -30,6 +30,42 @@ The decomposition in [`CHANGELOG`](CHANGELOG.md) (Unreleased / Changed) split `c
 
 ## Ideas (not yet scoped)
 
+- **Hybrid Functional Analysis: plugin batch + Cursor skill post-processing** —
+  keep the heavy, parallelizable work (export + 2-pass vision generation +
+  canvas apply, with the C=3 pool and fast model) in the plugin pipeline, and
+  add a Cursor skill (over the talk-to-figma MCP) for the things an agent
+  uniquely enables: reasoning across the whole report corpus and access to the
+  product codebase. The division follows where each runtime has a structural
+  advantage — vision/batch stays in the plugin; text reasoning + repo access
+  moves to the skill. Critically, the agent never handles images (only the
+  generated markdown), so it avoids the relay/context cost that makes a
+  pure-MCP rewrite several-fold to an order of magnitude slower than the
+  ~75–90s plugin batch.
+  - **Handoff (already exists):** the plugin stores the full report per card in
+    `sharedPluginData` and exports the `.md` zip. The skill consumes that corpus
+    as text — either reading the exported `.md` files from disk or via an MCP
+    "read stored report" command. Treat the report schema as the shared
+    contract so the two surfaces stay decoupled.
+  - **Candidate skill workflows:** (1) validate docs against the codebase (flag
+    documented requirements/navigation with no matching component or route,
+    surface Code Connect gaps); (2) synthesize a single end-to-end journey doc /
+    PRD from the per-screen reports; (3) targeted single-screen refinement
+    ("expand error states on screen 4") where serial agent latency is fine;
+    (4) export the `.md` set into the product repo as a PR (GitHub-PR-export
+    pattern).
+  - **Two kickoff patterns:** two-step (user runs plugin, then invokes the skill
+    on the output — no plugin changes) or skill-orchestrated (skill triggers the
+    plugin batch via one MCP command, then post-processes — keeps concurrency +
+    fast model inside the plugin).
+  - **Start here:** workflow (1) or (2) in two-step mode needs *no plugin
+    changes* — just a skill that reads the existing `.md` corpus. Proves the
+    value with zero risk to the fast pipeline; invest in MCP-triggered
+    orchestration only if the two-step UX feels clunky.
+  - **Trade-offs:** two surfaces to maintain + a shared report-schema contract;
+    repo-aware steps only work where the skill can see the codebase (Cursor), so
+    designers running the plugin standalone still get the fast docs but not the
+    code-aware enrichment.
+
 - **Describe screen and Create Documentation should fill Flow Label Text** — when
   **Describe screen (AI)** or **Create Documentation (AI)** runs on a board with
   flow arrows enabled, the model should also write short step labels into each

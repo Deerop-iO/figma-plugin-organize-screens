@@ -102,6 +102,16 @@ const FUNCTIONAL_ADVANCED_TIMEOUT_MS = 310000;
 // Export width balances vision legibility against payload size / token cost.
 const ANALYZE_EXPORT_WIDTH = 1024;
 
+// Max screens generated in parallel during a section "Create Documentation"
+// run. Only the NETWORK passes overlap; canvas writes stay fully sequential.
+// The Bonzai key is a SHARED org key, so this is deliberately conservative.
+// Default 3 until claude-sonnet-4-6's TPM is probed live: the prod key is
+// server-side only (`vercel env pull` returns it empty), so the limit could not
+// be measured at authoring time. Raise to 4 once a live probe confirms the
+// shared key's TPM is >= 150k and a ~10-screen board fits one window. Pairs
+// with the retry-after backoff in analyzeDesignClient.ts.
+const FUNCTIONAL_DOC_CONCURRENCY = 3;
+
 function postProgress(
   phase: "exporting" | "analyzing" | "applying",
   message?: string
@@ -146,6 +156,43 @@ function yieldToLoop(): Promise<void> {
 
 function screenLabel(name: string | undefined, index: number): string {
   return name || "Screen " + (index + 1);
+}
+
+/**
+ * Run `fn` over `items` with at most `limit` promises in flight, preserving
+ * result order by index. `onSettle(index)` fires as each item finishes (drives
+ * progress). Uses a plain for/await worker loop — never `forEach(async)` — per
+ * the kit long-running-work rule.
+ *
+ * Contract: `fn` MUST resolve (never throw); encode failures in its resolved
+ * value instead. `generateScreenDoc` satisfies this (it returns `{ ok: false }`
+ * on every error path), so one bad screen can never reject `Promise.all` and
+ * abort the whole pool.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+  onSettle?: (index: number) => void
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+      if (onSettle) onSettle(index);
+    }
+  }
+
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < workerCount; i++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
 }
 
 function countLabel(n: number): string {
@@ -343,96 +390,144 @@ function designReviewBinding(scope: AnalyzeScope): AnalysisBinding {
 //            and write a short "Summary unavailable" note into the Overview.
 // The single `osApplyFunctionalAnalysis` call stores the report FIRST, then
 // renders the summary fields, so the export is intact regardless of pass 2.
-async function documentOneScreen(screen: ScreenRef): Promise<OneScreenResult> {
-  const frame = await figma.getNodeByIdAsync(screen.frameId);
-  if (!frame || frame.removed || !("exportAsync" in frame)) {
-    return { ok: false, error: "The screen to document is no longer available." };
-  }
+// Result of the network half (generateScreenDoc). Carries the long-form report
+// and the canvas summary forward to the apply half, or an error/decline. This
+// type NEVER represents a thrown error — generateScreenDoc encodes every
+// failure path here so a worker pool can keep going.
+interface GeneratedScreenDoc {
+  ok: boolean;
+  markdown?: string;
+  summary?: FunctionalSummaryV1;
+  /** Carried into the apply result note (e.g. degraded pass 2). */
+  note?: string;
+  /** Set when ok === false: a hard error to report/count as a fail. */
+  error?: string;
+  /** Set when ok === false: the model declined (counts as a decline). */
+  skippedReason?: string;
+}
 
-  let bytes: Uint8Array;
+// Network + export half of documenting one screen: export -> pass 1 (vision ->
+// markdown) -> pass 2 (text -> 5-field summary, graceful degrade). Performs NO
+// canvas mutation, so it is safe to run concurrently across screens. It NEVER
+// throws: export failures, network errors, and validation declines all return
+// `{ ok: false, ... }`, so a bounded worker pool can record a failure and move
+// on instead of aborting every other screen.
+async function generateScreenDoc(screen: ScreenRef): Promise<GeneratedScreenDoc> {
   try {
-    bytes = await (frame as ExportMixin).exportAsync({
-      format: "PNG",
-      constraint: { type: "WIDTH", value: ANALYZE_EXPORT_WIDTH },
+    const frame = await figma.getNodeByIdAsync(screen.frameId);
+    if (!frame || frame.removed || !("exportAsync" in frame)) {
+      return { ok: false, error: "The screen to document is no longer available." };
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = await (frame as ExportMixin).exportAsync({
+        format: "PNG",
+        constraint: { type: "WIDTH", value: ANALYZE_EXPORT_WIDTH },
+      });
+    } catch (e: any) {
+      return {
+        ok: false,
+        error: "Could not export this screen: " + ((e && e.message) || "unknown error"),
+      };
+    }
+    if (!bytes || !bytes.length) {
+      return { ok: false, error: "Exported screen was empty." };
+    }
+    const imageBase64 = customBase64Encode(bytes);
+
+    // Pass 1: vision -> full markdown report.
+    const pass1 = await requestAnalyzeDesign({
+      imageBase64,
+      mimeType: "image/png",
+      systemContext: functionalAdvancedMode.buildSystemContext(),
+      instruction: functionalAdvancedMode.buildInstruction(undefined, {
+        frameName: screen.frameName,
+        cardTitle: screen.cardName,
+        existingDescription: screen.existingDescription,
+        journeyScreens: screen.journeyScreens,
+        flowEdges: screen.flowEdges,
+        currentCardId: screen.cardId,
+      }),
+      max_tokens: FUNCTIONAL_ADVANCED_MAX_TOKENS,
+      timeoutMs: FUNCTIONAL_ADVANCED_TIMEOUT_MS,
+      responseFormat: "text",
     });
+    const v1 = functionalAdvancedMode.validate(pass1.content);
+    if (!v1.ok) {
+      return { ok: false, error: v1.error, skippedReason: v1.skippedReason };
+    }
+    const markdown = (v1.value as { document: string }).document;
+
+    // Pass 2: text-only -> 5-field canvas summary. Degrade gracefully on failure.
+    let summary: FunctionalSummaryV1 | undefined;
+    let note = "";
+    try {
+      const pass2 = await requestAnalyzeDesign({
+        systemContext: buildFunctionalSummarySystemContext(),
+        instruction: buildFunctionalSummaryInstruction(markdown),
+        max_tokens: FUNCTIONAL_SUMMARY_MAX_TOKENS,
+      });
+      const v2 = validateFunctionalSummary(pass2.content);
+      if (v2.ok) {
+        summary = v2.value;
+      } else {
+        note = "Summary unavailable - see the downloaded document.";
+        console.warn("[create-documentation] summary invalid:", v2.error);
+      }
+    } catch (e: any) {
+      note = "Summary unavailable - see the downloaded document.";
+      console.warn(
+        "[create-documentation] summary failed:",
+        (e && e.message) || e
+      );
+    }
+
+    // On a degraded pass 2, still render a minimal summary so the canvas reflects
+    // the state; the full report is stored regardless.
+    if (!summary) {
+      summary = {
+        overview: note,
+        relatedScreens: [],
+        businessSummary: [],
+        workflows: [],
+        functionalRequirements: [],
+      };
+    }
+
+    return { ok: true, markdown, summary, note: note || undefined };
   } catch (e: any) {
+    // Defensive catch-all (e.g. a pass-1 network error): never throw, so the
+    // concurrency pool keeps running the remaining screens.
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+// Canvas half: write a generated doc + summary to its card. Figma writes are
+// not parallel-safe, so this must run on the main thread, one screen at a time.
+// A failed/declined generation short-circuits to a skip result with no canvas
+// write (the stored report from a successful pass 1 is preserved).
+async function applyScreenDoc(
+  screen: ScreenRef,
+  gen: GeneratedScreenDoc
+): Promise<OneScreenResult> {
+  if (!gen.ok) {
     return {
       ok: false,
-      error: "Could not export this screen: " + ((e && e.message) || "unknown error"),
-    };
-  }
-  if (!bytes || !bytes.length) {
-    return { ok: false, error: "Exported screen was empty." };
-  }
-  const imageBase64 = customBase64Encode(bytes);
-
-  // Pass 1: vision -> full markdown report.
-  const pass1 = await requestAnalyzeDesign({
-    imageBase64,
-    mimeType: "image/png",
-    systemContext: functionalAdvancedMode.buildSystemContext(),
-    instruction: functionalAdvancedMode.buildInstruction(undefined, {
-      frameName: screen.frameName,
-      cardTitle: screen.cardName,
-      existingDescription: screen.existingDescription,
-      journeyScreens: screen.journeyScreens,
-      flowEdges: screen.flowEdges,
-      currentCardId: screen.cardId,
-    }),
-    max_tokens: FUNCTIONAL_ADVANCED_MAX_TOKENS,
-    timeoutMs: FUNCTIONAL_ADVANCED_TIMEOUT_MS,
-    responseFormat: "text",
-  });
-  const v1 = functionalAdvancedMode.validate(pass1.content);
-  if (!v1.ok) {
-    return { ok: false, error: v1.error, skippedReason: v1.skippedReason };
-  }
-  const markdown = (v1.value as { document: string }).document;
-
-  // Pass 2: text-only -> 5-field canvas summary. Degrade gracefully on failure.
-  let summary: FunctionalSummaryV1 | undefined;
-  let note = "";
-  try {
-    const pass2 = await requestAnalyzeDesign({
-      systemContext: buildFunctionalSummarySystemContext(),
-      instruction: buildFunctionalSummaryInstruction(markdown),
-      max_tokens: FUNCTIONAL_SUMMARY_MAX_TOKENS,
-    });
-    const v2 = validateFunctionalSummary(pass2.content);
-    if (v2.ok) {
-      summary = v2.value;
-    } else {
-      note = "Summary unavailable - see the downloaded document.";
-      console.warn("[create-documentation] summary invalid:", v2.error);
-    }
-  } catch (e: any) {
-    note = "Summary unavailable - see the downloaded document.";
-    console.warn(
-      "[create-documentation] summary failed:",
-      (e && e.message) || e
-    );
-  }
-
-  // On a degraded pass 2, still render a minimal summary so the canvas reflects
-  // the state; the full report is stored regardless.
-  if (!summary) {
-    summary = {
-      overview: note,
-      relatedScreens: [],
-      businessSummary: [],
-      workflows: [],
-      functionalRequirements: [],
+      error: gen.error || "Documentation could not be generated.",
+      skippedReason: gen.skippedReason,
     };
   }
 
   const result = await osApplyFunctionalAnalysis(screen.sectionId, screen.cardId, {
-    document: markdown,
-    summary,
+    document: gen.markdown as string,
+    summary: gen.summary as FunctionalSummaryV1,
   });
 
   // Stale-structure guard: the markdown stored fine but the summary fields could
   // not be found on the card (it was built by an older plugin version). Surface
   // a clear, actionable note instead of silently reporting a blank "success".
+  let note = gen.note || "";
   const stale = !!(result && result.staleStructure);
   if (stale) {
     note =
@@ -447,6 +542,14 @@ async function documentOneScreen(screen: ScreenRef): Promise<OneScreenResult> {
     note: note || undefined,
     stale,
   };
+}
+
+// Single-screen convenience: generate then apply. Used by the card-scope path;
+// the section-scope path calls generate (in a pool) and apply (sequentially)
+// separately so the slow network passes can overlap.
+async function documentOneScreen(screen: ScreenRef): Promise<OneScreenResult> {
+  const gen = await generateScreenDoc(screen);
+  return applyScreenDoc(screen, gen);
 }
 
 async function runAnalyzeCard(scope: AnalyzeScope): Promise<void> {
@@ -781,24 +884,47 @@ async function runDocumentSection(): Promise<void> {
     );
   }
 
-  for (let i = 0; i < screens.length; i++) {
-    const s = screens[i];
-    const label = screenLabel(s.cardName, i);
-    postProgress(
-      "analyzing",
-      "Documenting screen " + (i + 1) + " of " + screens.length + "\u2026"
-    );
+  // One ScreenRef per screen, shared by both phases (journey context is the
+  // same for every screen in the run).
+  const refs: ScreenRef[] = screens.map(function (s) {
+    return {
+      sectionId: target.sectionId,
+      cardId: s.cardId,
+      frameId: s.frameId,
+      cardName: s.cardName,
+      frameName: s.frameName,
+      journeyScreens,
+      flowEdges,
+    };
+  });
 
+  // Phase A — generate concurrently (export + both AI passes, no canvas writes)
+  // with at most FUNCTIONAL_DOC_CONCURRENCY in flight. generateScreenDoc never
+  // throws, so a single failure stays a `{ ok: false }` slot instead of
+  // aborting the pool. Progress counts completions as they settle.
+  let generated = 0;
+  const gens = await mapWithConcurrency(
+    refs,
+    FUNCTIONAL_DOC_CONCURRENCY,
+    generateScreenDoc,
+    function () {
+      generated += 1;
+      postProgress(
+        "analyzing",
+        "Documented " + generated + " of " + screens.length + "\u2026"
+      );
+    }
+  );
+
+  // Phase B — apply each generated doc to its card sequentially, in original
+  // order (Figma writes are not parallel-safe and the section meta synthesis
+  // below is order-sensitive). Skip/fail accounting matches the previous
+  // single-pass loop exactly; a failed generation never triggers a canvas write.
+  postProgress("applying", "Writing results\u2026");
+  for (let i = 0; i < refs.length; i++) {
+    const label = screenLabel(refs[i].cardName, i);
     try {
-      const r = await documentOneScreen({
-        sectionId: target.sectionId,
-        cardId: s.cardId,
-        frameId: s.frameId,
-        cardName: s.cardName,
-        frameName: s.frameName,
-        journeyScreens,
-        flowEdges,
-      });
+      const r = await applyScreenDoc(refs[i], gens[i]);
       if (r.ok) {
         // Validation passed but the engine wrote nothing back (e.g. the card's
         // structure did not match the returned shape). Count it as skipped so
